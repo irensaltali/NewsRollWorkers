@@ -1,0 +1,152 @@
+{
+	"$schema": "../../node_modules/wrangler/config-schema.json",
+	"name": "newsroll-media",
+	"main": "index.mjs",
+	"compatibility_date": "2026-03-09",
+	"compatibility_flags": [
+		"nodejs_compat_v2"
+	],
+	// Required secrets for Media deploys in both production and staging:
+	// - OPENAI_API_KEY
+	// - FAL_API_KEY
+	// - CLOUDFLARE_API_TOKEN
+	"migrations": [
+		{
+			"tag": "v1-global-visual-feed-coordinator",
+			"new_sqlite_classes": [
+				"GlobalVisualFeedCoordinator"
+			]
+		}
+	],
+	"vars": {
+		"APP_NAME": "NewsRoll Media",
+		"ENVIRONMENT": "production",
+		"CLOUDFLARE_ACCOUNT_ID": "ccbc9926d08a298aee2a4f0cffcfc4a3",
+		"PUBLIC_BASE_URL": "https://media.newsroll.com",
+		"PUBLIC_API_BASE_URL": "https://api.newsroll.com",
+		"PUBLIC_MEDIA_BASE_URL": "https://media.newsroll.com",
+		"MEDIA_DAILY_LIMIT": "50",
+		"MEDIA_MIN_SCORE": "5"
+	},
+	"durable_objects": {
+		"bindings": [
+			{
+				"name": "GLOBAL_VISUAL_FEED_COORDINATOR",
+				"class_name": "GlobalVisualFeedCoordinator"
+			}
+		]
+	},
+	"kv_namespaces": [
+		{
+			"binding": "VISUAL_FEED_CACHE",
+			"id": "e1ffbfad58204e12b51d55b76d3ee186"
+		}
+	],
+	"d1_databases": [
+		{
+			"binding": "DB",
+			"database_name": "newsroll-staging",
+			"database_id": "b9500b46-f839-46c1-b445-7d473b496e33"
+		}
+	],
+	"r2_buckets": [
+		{
+			"binding": "MEDIA_BUCKET",
+			"bucket_name": "newsroll-media-staging"
+		}
+	],
+	"queues": {
+		"producers": [
+			{
+				"binding": "MEDIA_QUEUE",
+				"queue": "newsroll-media"
+			}
+		],
+		"consumers": [
+			{
+				"queue": "newsroll-media",
+				"max_batch_size": 5,
+				"max_batch_timeout": 5
+			}
+		]
+	},
+	"triggers": {
+		"crons": [
+			"*/5 * * * *"
+		]
+	},
+	"observability": {
+		"enabled": true,
+		"head_sampling_rate": 1
+	},
+	// ── Staging environment ─────────────────────────────────────────────
+	"env": {
+		"staging": {
+			"name": "newsroll-media-staging",
+			// Required secrets for staging match production:
+			// - OPENAI_API_KEY -- Added as secret
+			// - FAL_API_KEY -- Added as secret
+			// - CLOUDFLARE_API_TOKEN
+			"vars": {
+				"APP_NAME": "NewsRoll Media",
+				"ENVIRONMENT": "staging",
+				"CLOUDFLARE_ACCOUNT_ID": "ccbc9926d08a298aee2a4f0cffcfc4a3",
+				"PUBLIC_BASE_URL": "https://media-staging.newsroll.com",
+				"PUBLIC_API_BASE_URL": "https://api-staging.newsroll.com",
+				"PUBLIC_MEDIA_BASE_URL": "https://media-staging.newsroll.com",
+				"MEDIA_MIN_SCORE": "5",
+				"MEDIA_DAILY_LIMIT": "10"
+			},
+			"durable_objects": {
+				"bindings": [
+					{
+						"name": "GLOBAL_VISUAL_FEED_COORDINATOR",
+						"class_name": "GlobalVisualFeedCoordinator"
+					}
+				]
+			},
+			"kv_namespaces": [
+				{
+					"binding": "VISUAL_FEED_CACHE"
+				}
+			],
+			"d1_databases": [
+				{
+					"binding": "DB",
+					"database_name": "newsroll-staging",
+					"database_id": "b9500b46-f839-46c1-b445-7d473b496e33"
+				}
+			],
+			"r2_buckets": [
+				{
+					"binding": "MEDIA_BUCKET",
+					"bucket_name": "newsroll-media-staging"
+				}
+			],
+			"queues": {
+				"producers": [
+					{
+						"binding": "MEDIA_QUEUE",
+						"queue": "newsroll-media-staging"
+					}
+				],
+				"consumers": [
+					{
+						"queue": "newsroll-media-staging",
+						"max_batch_size": 5,
+						"max_batch_timeout": 5
+					}
+				]
+			},
+			"triggers": {
+				"crons": [
+					"*/5 * * * *"
+				]
+			},
+			"observability": {
+				"enabled": true,
+				"head_sampling_rate": 1
+			}
+		}
+	}
+}

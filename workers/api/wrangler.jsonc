@@ -1,0 +1,110 @@
+{
+	"$schema": "../../node_modules/wrangler/config-schema.json",
+	"name": "newsroll-workers",
+	"main": "index.mjs",
+	"compatibility_date": "2026-03-09",
+	"compatibility_flags": [
+		"nodejs_compat_v2"
+	],
+	// Required secrets for API deploys in both production and staging:
+	// - INSTALLATION_TOKEN_SECRET
+	// - SESSION_ENCRYPTION_SECRET
+	// - OPENAI_API_KEY
+	// - REVENUECAT_SECRET_KEY
+	"vars": {
+		"APP_NAME": "NewsRoll",
+		"ENVIRONMENT": "production",
+		"CLOUDFLARE_ACCOUNT_ID": "ccbc9926d08a298aee2a4f0cffcfc4a3",
+		"PUBLIC_BASE_URL": "https://api.newsroll.com",
+		"PUBLIC_API_BASE_URL": "https://api.newsroll.com",
+		"PUBLIC_MEDIA_BASE_URL": "https://media.newsroll.com",
+		"REVENUECAT_APP_ID": "app7432c46bea",
+		"REVENUECAT_PROJECT_ID": "projabb5e5d6"
+	},
+	"routes": [
+		{
+			"pattern": "api.newsroll.com",
+			"custom_domain": true
+		}
+	],
+	"kv_namespaces": [
+		{
+			"binding": "VISUAL_FEED_CACHE",
+			"id": "eafcbd58924d42d992d55453b22d50d0"
+		}
+	],
+	"d1_databases": [
+		{
+			"binding": "DB",
+			"database_name": "newsroll-staging",
+			"database_id": "b9500b46-f839-46c1-b445-7d473b496e33",
+			"migrations_dir": "./migrations"
+		}
+	],
+	"r2_buckets": [
+		{
+			"binding": "MEDIA_BUCKET",
+			"bucket_name": "newsroll-media-staging"
+		}
+	],
+	"observability": {
+		"enabled": true,
+		"head_sampling_rate": 1,
+		"logs": {
+			"enabled": true
+		}
+	},
+	// ── Staging environment ─────────────────────────────────────────────
+	"env": {
+		"staging": {
+			"name": "newsroll-workers-staging",
+			// Required secrets for staging match production:
+			// - INSTALLATION_TOKEN_SECRET
+			// - SESSION_ENCRYPTION_SECRET
+			// - OPENAI_API_KEY
+			// - REVENUECAT_SECRET_KEY
+			"vars": {
+				"APP_NAME": "NewsRoll",
+				"ENVIRONMENT": "staging",
+				"CLOUDFLARE_ACCOUNT_ID": "ccbc9926d08a298aee2a4f0cffcfc4a3",
+				"PUBLIC_BASE_URL": "https://api-staging.newsroll.com",
+				"PUBLIC_API_BASE_URL": "https://api-staging.newsroll.com",
+				"PUBLIC_MEDIA_BASE_URL": "https://media-staging.newsroll.com",
+				"REVENUECAT_APP_ID": "app7432c46bea",
+				"REVENUECAT_PROJECT_ID": "projabb5e5d6"
+			},
+			"routes": [
+				{
+					"pattern": "api-staging.newsroll.com",
+					"custom_domain": true
+				}
+			],
+			"kv_namespaces": [
+				{
+					"binding": "VISUAL_FEED_CACHE"
+				}
+			],
+			"d1_databases": [
+				{
+					"binding": "DB",
+					"database_name": "newsroll-staging",
+					"database_id": "b9500b46-f839-46c1-b445-7d473b496e33",
+					"migrations_dir": "./migrations"
+				}
+			],
+			"r2_buckets": [
+				{
+					"binding": "MEDIA_BUCKET",
+					"bucket_name": "newsroll-media-staging"
+				}
+			],
+			"observability": {
+				"enabled": true,
+				"head_sampling_rate": 1,
+				"logs": {
+					"enabled": true
+				}
+			}
+		}
+	}
+}

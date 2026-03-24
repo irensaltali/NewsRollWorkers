@@ -1,0 +1,25 @@
+{
+  "name": "newsroll-workers",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "npm run dev:api",
+    "dev:api": "wrangler dev --local --config workers/api/wrangler.jsonc",
+    "dev:admin": "wrangler dev --local --config workers/admin/wrangler.jsonc",
+    "dev:media": "wrangler dev --local --config workers/media/wrangler.jsonc",
+    "build:admin-ui": "npm --prefix ../NewsRollAdmin run build",
+    "db:migrate:local": "wrangler d1 migrations apply newsroll-staging --local --config workers/api/wrangler.jsonc",
+    "db:migrate:staging": "wrangler d1 migrations apply newsroll-staging --env staging --remote --config workers/api/wrangler.jsonc",
+    "db:migrate:prod": "wrangler d1 migrations apply newsroll-staging --remote --config workers/api/wrangler.jsonc",
+    "deploy": "bash deploy.sh production",
+    "deploy:staging": "bash deploy.sh staging",
+    "test": "node --test"
+  },
+  "devDependencies": {
+    "wrangler": "^4.76.0"
+  },
+  "dependencies": {
+    "@fal-ai/client": "^1.9.4"
+  }
+}

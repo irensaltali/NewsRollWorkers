@@ -1,0 +1,102 @@
+{
+	"$schema": "../../node_modules/wrangler/config-schema.json",
+	"name": "newsroll-admin",
+	"main": "index.mjs",
+	"compatibility_date": "2026-03-09",
+	"compatibility_flags": [
+		"nodejs_compat_v2"
+	],
+	// Required secrets for Admin deploys in both production and staging:
+	// - ADMIN_USERNAME
+	// - ADMIN_PASSWORD
+	// - OPENAI_API_KEY
+	// - FAL_API_KEY
+	// - CLOUDFLARE_API_TOKEN
+	"vars": {
+		"APP_NAME": "NewsRoll Admin",
+		"ENVIRONMENT": "production",
+		"CLOUDFLARE_ACCOUNT_ID": "ccbc9926d08a298aee2a4f0cffcfc4a3",
+		"ADMIN_USERNAME": "admin",
+		"ADMIN_PASSWORD": "p1a3s5s7w9o0r1d",
+	},
+	"routes": [
+		{
+			"pattern": "admin.newsroll.com",
+			"custom_domain": true
+		}
+	],
+	"d1_databases": [
+		{
+			"binding": "DB",
+			"database_name": "newsroll-staging",
+			"database_id": "b9500b46-f839-46c1-b445-7d473b496e33"
+		}
+	],
+	"r2_buckets": [
+		{
+			"binding": "MEDIA_BUCKET",
+			"bucket_name": "newsroll-media-staging"
+		}
+	],
+	"assets": {
+		"directory": "../../../NewsRollAdmin/dist",
+		"binding": "ASSETS",
+		"not_found_handling": "single-page-application"
+	},
+	"observability": {
+		"enabled": true,
+		"head_sampling_rate": 1,
+		"logs": {
+			"enabled": true
+		}
+	},
+	"env": {
+		"staging": {
+			"name": "newsroll-admin-staging",
+			// Required secrets for staging match production:
+			// - ADMIN_USERNAME
+			// - ADMIN_PASSWORD
+			// - OPENAI_API_KEY
+			// - FAL_API_KEY
+			// - CLOUDFLARE_API_TOKEN
+			"vars": {
+				"APP_NAME": "NewsRoll Admin",
+				"ENVIRONMENT": "staging",
+				"CLOUDFLARE_ACCOUNT_ID": "ccbc9926d08a298aee2a4f0cffcfc4a3",
+				"ADMIN_USERNAME": "admin",
+				"ADMIN_PASSWORD": "p1a3s5s7w9o0r1d",
+			},
+			"routes": [
+				{
+					"pattern": "admin-staging.newsroll.com",
+					"custom_domain": true
+				}
+			],
+			"d1_databases": [
+				{
+					"binding": "DB",
+					"database_name": "newsroll-staging",
+					"database_id": "b9500b46-f839-46c1-b445-7d473b496e33"
+				}
+			],
+			"r2_buckets": [
+				{
+					"binding": "MEDIA_BUCKET",
+					"bucket_name": "newsroll-media-staging"
+				}
+			],
+			"assets": {
+				"directory": "../../../NewsRollAdmin/dist",
+				"binding": "ASSETS",
+				"not_found_handling": "single-page-application"
+			},
+			"observability": {
+				"enabled": true,
+				"head_sampling_rate": 1,
+				"logs": {
+					"enabled": true
+				}
+			}
+		}
+	}
+}

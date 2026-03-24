@@ -1,0 +1,1102 @@
+import { buildAppConfig } from "./config.mjs";
+import {
+  getReadableContent,
+  getAIPromptConfig,
+  getCachedAIResult,
+  createPromptRunEvent,
+  getInstallation,
+  hasAIRequestReceipt,
+  listPublishedVisualFeed,
+  storeAIRequestReceipt,
+  storeCachedAIResult,
+  upsertInstallation
+} from "./d1.mjs";
+import { error, json, readJson, bearerToken } from "./http.mjs";
+import * as log from "./log.mjs";
+
+import { signInstallation, verifyInstallation } from "./security.mjs";
+import {
+  buildVisualFeedResponse,
+  parseVisualFeedCursor,
+  parseVisualFeedLimit,
+  readVisualFeedSnapshot
+} from "./visual-feed.mjs";
+import { validateEventBatch, storeEvents } from "./events.mjs";
+import { generateRecommendedFeed } from "./recommendation.mjs";
+import { processAIRequest, authorizeAIRequest, ensureAIRequestBalance, finalizeAIRequestCharge, CREDIT_COSTS } from "./credits.mjs";
+import {
+  formatExplainResult,
+  generateSummary,
+  generateSummaryViaCrawl,
+  generateStructuredTranslation,
+  generateThreadIntelligence,
+  generateExplain,
+  generateExplainViaCrawl,
+  hasOpenAIConfig
+} from "./ai-gateway.mjs";
+import { AI_ACTIONS } from "./ai-actions.mjs";
+import { listAIFeatures } from "./ai-feature-config.mjs";
+import { getSubscriberInfo, getCreditBalance } from "./revenuecat.mjs";
+import { resolveArticleContent, resolveArticleUrl } from "./article-content.mjs";
+import { promptConfigWithFallback } from "./prompt-config.mjs";
+
+function now() {
+  return new Date().toISOString();
+}
+
+function normalizeText(value) {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+async function resolveAIProvider(env, promptKey) {
+  const config = promptConfigWithFallback(await getAIPromptConfig(env, promptKey), promptKey);
+  return config?.provider ?? "openai";
+}
+
+function sortedJson(value) {
+  if (Array.isArray(value)) {
+    return `[${value.map((item) => sortedJson(item)).join(",")}]`;
+  }
+  if (value && typeof value === "object") {
+    return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${sortedJson(value[key])}`).join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
+
+async function sha256Hex(value) {
+  const bytes = new TextEncoder().encode(value);
+  const digest = await crypto.subtle.digest("SHA-256", bytes);
+  return Array.from(new Uint8Array(digest))
+    .map((byte) => byte.toString(16).padStart(2, "0"))
+    .join("");
+}
+
+function normalizeTranslationStory(storyId, story) {
+  return {
+    id: Number(story?.id ?? storyId),
+    title: normalizeText(story?.title),
+    text: normalizeText(story?.text)
+  };
+}
+
+function normalizeStructuredComments(comments) {
+  if (!Array.isArray(comments)) {
+    return [];
+  }
+
+  return comments
+    .filter((comment) => Number.isInteger(comment?.id))
+    .map((comment) => ({
+      id: Number(comment.id),
+      parentId: Number.isInteger(comment.parentId) ? Number(comment.parentId) : null,
+      author: normalizeText(comment.author),
+      text: normalizeText(comment.text),
+      depth: Number.isInteger(comment.depth) ? Number(comment.depth) : 0
+    }));
+}
+
+function translationHashSource(payload) {
+  return {
+    storyId: payload.storyId,
+    targetLanguage: payload.targetLanguage,
+    story: {
+      id: payload.story.id,
+      title: payload.story.title,
+      text: payload.story.text
+    },
+    comments: payload.comments.map((comment) => ({
+      id: comment.id,
+      text: comment.text
+    }))
+  };
+}
+
+async function buildTranslationPayload(env, body) {
+  const storyId = Number(body.storyId);
+  const targetLanguage = normalizeText(body.targetLanguage);
+  const story = normalizeTranslationStory(storyId, body.story);
+  const resolvedStory = await resolveArticleContent(env, storyId, {
+    title: story.title,
+    text: story.text,
+    url: body.story?.url
+  });
+  const comments = normalizeStructuredComments(body.comments);
+  const source = {
+    storyId,
+    targetLanguage,
+    story: {
+      ...story,
+      title: resolvedStory.title || story.title,
+      text: resolvedStory.text
+    },
+    comments
+  };
+  const contentHash = await sha256Hex(sortedJson(translationHashSource(source)));
+
+  return {
+    ...source,
+    contentHash
+  };
+}
+
+function translationCacheKey(payload) {
+  return `translation:v2:${payload.storyId}:${payload.targetLanguage}:${payload.contentHash}`;
+}
+
+function parseCachedTranslation(value) {
+  try {
+    const parsed = JSON.parse(value);
+    if (!parsed?.story || !Array.isArray(parsed?.comments) || !parsed?.contentHash || !parsed?.targetLanguage) {
+      return null;
+    }
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+function translationCacheExpiryIso() {
+  return new Date(Date.now() + AI_ACTIONS.translation.cacheTtlMs).toISOString();
+}
+
+function normalizeThreadPayload(body) {
+  const storyId = Number(body.storyId);
+  const title = normalizeText(body.title);
+  const comments = normalizeStructuredComments(body.comments);
+  return { storyId, title, comments };
+}
+
+function threadIntelligenceHashSource(payload) {
+  return {
+    storyId: payload.storyId,
+    title: payload.title,
+    comments: payload.comments.map((comment) => ({
+      id: comment.id,
+      text: comment.text
+    }))
+  };
+}
+
+async function buildThreadIntelligencePayload(body) {
+  const source = normalizeThreadPayload(body);
+  const contentHash = await sha256Hex(sortedJson(threadIntelligenceHashSource(source)));
+  return {
+    ...source,
+    contentHash
+  };
+}
+
+function threadIntelligenceCacheKey(payload) {
+  return `thread_intelligence:v1:${payload.storyId}:${payload.contentHash}`;
+}
+
+function parseCachedThreadIntelligence(value) {
+  try {
+    const parsed = JSON.parse(value);
+    if (
+      typeof parsed?.summary !== "string" ||
+      !Array.isArray(parsed?.keyInsights) ||
+      typeof parsed?.discussionShape !== "string" ||
+      typeof parsed?.contentHash !== "string"
+    ) {
+      return null;
+    }
+
+    return {
+      summary: parsed.summary.trim(),
+      keyInsights: parsed.keyInsights.filter((item) => typeof item === "string" && item.trim().length > 0),
+      discussionShape: parsed.discussionShape,
+      contentHash: parsed.contentHash
+    };
+  } catch {
+    return null;
+  }
+}
+
+function explainContentHashSource(payload) {
+  return {
+    storyId: payload.storyId,
+    title: payload.title,
+    text: payload.text
+  };
+}
+
+async function buildExplainPayload(body, fallbackLevel = "technical") {
+  const storyId = Number(body.storyId);
+  const title = normalizeText(body.title);
+  const text = normalizeText(body.text);
+  const normalizedLevel = normalizeText(body.level || fallbackLevel).toLowerCase();
+  const level = normalizedLevel === "simple" ? "simple" : "technical";
+  const contentHash = await sha256Hex(sortedJson(explainContentHashSource({ storyId, title, text })));
+  const payload = {
+    storyId,
+    title,
+    text,
+    level,
+    contentHash
+  };
+  if (body._cfCrawl) {
+    payload._cfCrawl = true;
+    payload.url = body.url ?? null;
+  }
+  return payload;
+}
+
+function explainCacheKey(payload) {
+  return `explain:v1:${payload.level}:${payload.storyId}:${payload.contentHash}`;
+}
+
+function parseCachedExplain(value) {
+  try {
+    const parsed = JSON.parse(value);
+    if (
+      typeof parsed?.title !== "string" ||
+      !Array.isArray(parsed?.sections) ||
+      !Array.isArray(parsed?.followUps) ||
+      typeof parsed?.level !== "string" ||
+      typeof parsed?.contentHash !== "string"
+    ) {
+      return null;
+    }
+
+    const sections = parsed.sections
+      .filter((section) => typeof section?.heading === "string" && typeof section?.body === "string")
+      .map((section) => ({
+        heading: section.heading.trim(),
+        body: section.body.trim()
+      }))
+      .filter((section) => section.heading && section.body);
+
+    if (!sections.length) {
+      return null;
+    }
+
+    return {
+      title: parsed.title.trim(),
+      sections,
+      followUps: parsed.followUps.filter((item) => typeof item === "string" && item.trim().length > 0),
+      level: parsed.level === "simple" ? "simple" : "technical",
+      contentHash: parsed.contentHash
+    };
+  } catch {
+    return null;
+  }
+}
+
+function aiCacheExpiryIso(actionKey) {
+  const ttlMs = AI_ACTIONS[actionKey]?.cacheTtlMs;
+  return ttlMs ? new Date(Date.now() + ttlMs).toISOString() : null;
+}
+
+async function handleStructuredCachedAIRequest(request, env, {
+  actionKey,
+  buildPayload,
+  validatePayload,
+  cacheKeyFor,
+  parseCached,
+  generate,
+  toResponsePayload,
+  resultType = actionKey,
+  provider = "openai"
+}) {
+  const installation = await requireInstallation(request, env);
+  const body = (await readJson(request)) ?? {};
+  const revenueCatAppUserId = revenueCatAppUserIdForInstallation(installation);
+  const auth = await authorizeAIRequest(env, revenueCatAppUserId, actionKey, { requireBalance: false });
+  const authError = aiBillingError(auth);
+  if (authError) return authError;
+
+  if (provider !== "cloudflare" && !hasOpenAIConfig(env)) {
+    log.warn({ event: "ai_provider_unavailable", provider: "openai", action: actionKey, reason: "missing_api_key" });
+    return error("AI provider unavailable", 503, { code: "ai_provider_unavailable", provider: "openai" });
+  }
+
+  const payload = await buildPayload(body);
+  const payloadError = validatePayload?.(payload);
+  if (payloadError) {
+    return error(payloadError, 422);
+  }
+
+  const receiptKey = {
+    subscriberId: revenueCatAppUserId,
+    action: actionKey,
+    storyId: payload.storyId,
+    targetLanguage: payload.targetLanguage ?? null,
+    contentHash: payload.contentHash
+  };
+  const alreadyCharged = await hasAIRequestReceipt(env, receiptKey);
+
+  if (!alreadyCharged) {
+    const balanceGate = await ensureAIRequestBalance(env, revenueCatAppUserId, actionKey);
+    const balanceError = aiBillingError(balanceGate);
+    if (balanceError) return balanceError;
+  }
+
+  const cacheKey = cacheKeyFor(payload);
+  const cached = await getCachedAIResult(env, cacheKey);
+  const cachedPayload = cached ? parseCached(cached.resultText) : null;
+  if (cachedPayload) {
+    await createPromptRunEvent(env, {
+      source: "app_api",
+      promptKind: "ai",
+      promptKey: actionKey,
+      provider,
+      model: AI_ACTIONS[actionKey].model,
+      modality: "text",
+      status: "cached",
+      latencyMs: 0,
+      cacheHit: true,
+      requestExcerpt: JSON.stringify(payload).slice(0, 500),
+      responseExcerpt: JSON.stringify(cachedPayload).slice(0, 500),
+      storyId: payload.storyId
+    });
+
+    let charge = null;
+    if (!alreadyCharged) {
+      charge = await finalizeAIRequestCharge(env, revenueCatAppUserId, actionKey, cacheKey, auth.cost);
+      const chargeError = aiBillingError(charge);
+      if (chargeError) return chargeError;
+      await storeAIRequestReceipt(env, receiptKey);
+    }
+
+    return json({
+      ...cachedPayload,
+      creditsUsed: alreadyCharged ? 0 : auth.cost,
+      balanceAfter: alreadyCharged ? null : charge.balance,
+      cached: true,
+      charged: !alreadyCharged
+    });
+  }
+
+  const result = await generate(payload);
+  if (!result) {
+    await createPromptRunEvent(env, {
+      source: "app_api",
+      promptKind: "ai",
+      promptKey: actionKey,
+      provider,
+      model: AI_ACTIONS[actionKey].model,
+      modality: "text",
+      status: "failed",
+      requestExcerpt: JSON.stringify(payload).slice(0, 500),
+      errorText: "AI generation failed",
+      storyId: payload.storyId
+    });
+    return error("AI generation failed", 502);
+  }
+
+  const responsePayload = toResponsePayload(payload, result);
+  await storeCachedAIResult(env, {
+    cacheKey,
+    resultType,
+    storyId: payload.storyId,
+    resultText: JSON.stringify(responsePayload),
+    model: AI_ACTIONS[actionKey].model,
+    expiresAt: aiCacheExpiryIso(actionKey)
+  });
+
+  await createPromptRunEvent(env, {
+    source: "app_api",
+    promptKind: "ai",
+    promptKey: actionKey,
+    provider,
+    model: AI_ACTIONS[actionKey].model,
+    modality: "text",
+    status: "completed",
+    requestExcerpt: JSON.stringify(payload).slice(0, 500),
+    responseExcerpt: JSON.stringify(responsePayload).slice(0, 500),
+    storyId: payload.storyId
+  });
+
+  if (alreadyCharged) {
+    return json({
+      ...responsePayload,
+      creditsUsed: 0,
+      balanceAfter: null,
+      cached: false,
+      charged: false
+    });
+  }
+
+  const charge = await finalizeAIRequestCharge(env, revenueCatAppUserId, actionKey, cacheKey, auth.cost);
+  const chargeError = aiBillingError(charge);
+  if (chargeError) return chargeError;
+  await storeAIRequestReceipt(env, receiptKey);
+
+  return json({
+    ...responsePayload,
+    creditsUsed: auth.cost,
+    balanceAfter: charge.balance,
+    cached: false,
+    charged: true
+  });
+}
+
+function revenueCatAppUserIdForInstallation(installation) {
+  return installation?.revenueCatAppUserId ?? installation?.installationId;
+}
+
+function aiBillingError(result) {
+  if (result?.error === "subscription_status_unavailable") {
+    return error("Subscription status unavailable", 503, { code: "subscription_status_unavailable" });
+  }
+  if (result?.error === "credit_balance_unavailable") {
+    return error("Credit balance unavailable", 503, { code: "credit_balance_unavailable" });
+  }
+  if (result?.error === "pro_required") {
+    return error("Pro subscription required", 402, { code: "pro_required" });
+  }
+  if (result?.error === "insufficient_credits") {
+    return error("Insufficient credits", 402, { code: "insufficient_credits", balance: result.balance, required: result.required });
+  }
+  if (result?.error) {
+    return error(result.error, 500);
+  }
+  return null;
+}
+
+const CORS_HEADERS = {
+  "access-control-allow-origin": "*",
+  "access-control-allow-methods": "GET, POST, PATCH, OPTIONS",
+  "access-control-allow-headers": "Content-Type, Authorization",
+  "access-control-max-age": "86400"
+};
+
+function withCors(response) {
+  const headers = new Headers(response.headers);
+  for (const [key, value] of Object.entries(CORS_HEADERS)) {
+    headers.set(key, value);
+  }
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers
+  });
+}
+
+async function installationContext(request, env) {
+  const token = bearerToken(request);
+  if (!token) {
+    return null;
+  }
+
+  const payload = await verifyInstallation(token, env.INSTALLATION_TOKEN_SECRET);
+  if (!payload?.installationId) {
+    return payload;
+  }
+
+  const installation = await getInstallation(env, payload.installationId);
+  if (!installation) {
+    return payload;
+  }
+
+  return {
+    ...payload,
+    platform: installation.platform ?? payload.platform,
+    revenueCatAppUserId: installation.revenueCatAppUserId ?? payload.revenueCatAppUserId
+  };
+}
+
+async function requireInstallation(request, env) {
+  const payload = await installationContext(request, env);
+  if (!payload?.installationId) {
+    throw new Response(JSON.stringify({ error: "Missing or invalid installation token" }), {
+      status: 401,
+      headers: { "content-type": "application/json" }
+    });
+  }
+  return payload;
+}
+
+
+async function handleInstallations(request, env) {
+  const body = (await readJson(request)) ?? {};
+  const installationId = body.installationId ?? crypto.randomUUID();
+  const revenueCatAppUserId = body.revenueCatAppUserId ?? installationId;
+  const installation = {
+    id: installationId,
+    platform: body.platform ?? "ios",
+    appVersion: body.appVersion ?? null,
+    pushToken: body.pushToken ?? null,
+    pushEnabled: Boolean(body.pushEnabled),
+    revenueCatAppUserId,
+    createdAt: now(),
+    updatedAt: now()
+  };
+
+  await upsertInstallation(env, installation);
+  const token = await signInstallation(
+    {
+      installationId,
+      revenueCatAppUserId,
+      platform: installation.platform,
+      issuedAt: Date.now()
+    },
+    env.INSTALLATION_TOKEN_SECRET
+  );
+
+  log.info({ event: "installation_created", installationId, platform: installation.platform, appVersion: installation.appVersion });
+  return json({
+    installationId,
+    revenueCatAppUserId,
+    token,
+    config: buildAppConfig(env)
+  });
+}
+
+async function handleUpdateInstallation(request, env) {
+  const installation = await requireInstallation(request, env);
+  const body = (await readJson(request)) ?? {};
+  const revenueCatAppUserId = body.revenueCatAppUserId ?? installation.revenueCatAppUserId ?? installation.installationId;
+  await upsertInstallation(env, {
+    id: installation.installationId,
+    platform: body.platform ?? installation.platform ?? "ios",
+    appVersion: body.appVersion ?? null,
+    pushToken: body.pushToken ?? null,
+    pushEnabled: Boolean(body.pushEnabled),
+    revenueCatAppUserId,
+    createdAt: now(),
+    updatedAt: now()
+  });
+  return json({ ok: true, revenueCatAppUserId });
+}
+
+async function handleConfig(_request, env) {
+  return json(buildAppConfig(env));
+}
+
+async function handleVisualFeed(request, env) {
+  const url = new URL(request.url);
+  const cursor = parseVisualFeedCursor(url.searchParams.get("cursor"));
+  const limit = parseVisualFeedLimit(env, url.searchParams.get("limit"));
+
+  if (cursor == null) {
+    const snapshot = await readVisualFeedSnapshot(env);
+    if (snapshot?.length) {
+      return json(buildVisualFeedResponse(env, snapshot, cursor, limit), {
+        headers: {
+          "cache-control": "public, max-age=15, stale-while-revalidate=60"
+        }
+      });
+    }
+  }
+
+  const items = await listPublishedVisualFeed(env, { cursor, limit });
+  return json(buildVisualFeedResponse(env, items, cursor, limit), {
+    headers: {
+      "cache-control": "public, max-age=15, stale-while-revalidate=60"
+    }
+  });
+}
+
+async function handleReadableArticle(env, storyId) {
+  const content = await getReadableContent(env, Number(storyId));
+  return new Response(content?.extractedText ?? "Readable version is not ready yet.", {
+    headers: {
+      "content-type": "text/plain; charset=utf-8"
+    }
+  });
+}
+
+async function handleEvents(request, env) {
+  const installation = await requireInstallation(request, env);
+  const body = (await readJson(request)) ?? {};
+  const events = body.events ?? body;
+
+  const { valid, rejected } = validateEventBatch(Array.isArray(events) ? events : []);
+  if (valid.length === 0) {
+    return error("No valid events provided", 422, { rejected });
+  }
+
+  const result = await storeEvents(env, installation.installationId, valid);
+  return json({ ok: true, stored: result.stored, rejected: rejected.length });
+}
+
+async function handleForYouFeed(request, env) {
+  const installation = await installationContext(request, env);
+  const installationId = installation?.installationId ?? null;
+
+  const url = new URL(request.url);
+  const cursor = url.searchParams.get("cursor") || null;
+  const coldStartCursor = parseVisualFeedCursor(cursor);
+  const limit = Math.min(Math.max(parseInt(url.searchParams.get("limit") ?? "20", 10) || 20, 1), 50);
+
+  if (!installationId || !env?.DB?.prepare) {
+    return json({ coldStart: true, items: [], nextCursor: null });
+  }
+
+  const result = await generateRecommendedFeed(env, installationId, { cursor, limit });
+
+  if (result.coldStart) {
+    const items = await listPublishedVisualFeed(env, { cursor: coldStartCursor, limit });
+    const fallback = buildVisualFeedResponse(env, items, coldStartCursor, limit);
+    return json({
+      coldStart: true,
+      items: fallback.items,
+      nextCursor: fallback.nextCursor != null ? String(fallback.nextCursor) : null
+    });
+  }
+
+  return json({
+    coldStart: false,
+    items: result.items ?? [],
+    nextCursor: result.nextCursor ?? null
+  });
+}
+
+async function handleMediaAsset(env, mediaPath) {
+  if (!env.MEDIA_BUCKET?.get) {
+    return error("media bucket is not configured", 404);
+  }
+
+  const object = await env.MEDIA_BUCKET.get(mediaPath);
+  if (!object) {
+    return error("media not found", 404);
+  }
+
+  const headers = new Headers();
+  object.writeHttpMetadata(headers);
+  headers.set("etag", object.httpEtag);
+  headers.set("cache-control", "public, max-age=31536000, immutable");
+  if (!headers.has("content-type")) {
+    headers.set("content-type", "image/jpeg");
+  }
+
+  return new Response(object.body, {
+    headers
+  });
+}
+
+async function handleAISummary(request, env) {
+  const installation = await requireInstallation(request, env);
+  const body = (await readJson(request)) ?? {};
+  const storyId = body.storyId;
+  if (!storyId) return error("storyId is required", 422);
+
+  const cacheKey = `summary:${storyId}`;
+  const revenueCatAppUserId = revenueCatAppUserIdForInstallation(installation);
+  const gate = await processAIRequest(env, revenueCatAppUserId, "summary", cacheKey);
+  const gateError = aiBillingError(gate);
+  if (gateError) return gateError;
+
+  const provider = await resolveAIProvider(env, "summary");
+
+  if (gate.cached) {
+    await createPromptRunEvent(env, {
+      source: "app_api",
+      promptKind: "ai",
+      promptKey: "summary",
+      provider,
+      model: AI_ACTIONS.summary.model,
+      modality: "text",
+      status: "cached",
+      latencyMs: 0,
+      cacheHit: true,
+      requestExcerpt: JSON.stringify({ storyId, title: body.title ?? "" }).slice(0, 500),
+      responseExcerpt: String(gate.result ?? "").slice(0, 500),
+      storyId
+    });
+    const charge = await finalizeAIRequestCharge(env, revenueCatAppUserId, "summary", cacheKey, gate.cost);
+    const chargeError = aiBillingError(charge);
+    if (chargeError) return chargeError;
+    return json({ result: gate.result, creditsUsed: gate.cost, balanceAfter: charge.balance, cached: true });
+  }
+
+  let result;
+  let summaryTitle = body.title ?? "";
+
+  if (provider === "cloudflare") {
+    const articleUrl = await resolveArticleUrl(env, storyId, { url: body.url ?? null });
+    if (articleUrl) {
+      result = await generateSummaryViaCrawl(env, articleUrl, storyId, summaryTitle);
+    } else {
+      log.info({ event: "provider_fallback", provider: "cloudflare", fallback: "openai", reason: "no_url", storyId });
+      const article = await resolveArticleContent(env, storyId, { title: summaryTitle, text: body.text ?? "", url: null });
+      summaryTitle = article.title || summaryTitle;
+      result = await generateSummary(env, storyId, summaryTitle, article.text);
+    }
+  } else {
+    if (!hasOpenAIConfig(env)) {
+      return error("AI provider unavailable", 503, { code: "ai_provider_unavailable", provider: "openai" });
+    }
+    const article = await resolveArticleContent(env, storyId, { title: summaryTitle, text: body.text ?? "", url: body.url ?? null });
+    summaryTitle = article.title || summaryTitle;
+    result = await generateSummary(env, storyId, summaryTitle, article.text);
+  }
+
+  if (!result) {
+    await createPromptRunEvent(env, {
+      source: "app_api",
+      promptKind: "ai",
+      promptKey: "summary",
+      provider,
+      model: AI_ACTIONS.summary.model,
+      modality: "text",
+      status: "failed",
+      requestExcerpt: JSON.stringify({ storyId, title: summaryTitle }).slice(0, 500),
+      errorText: "AI generation failed",
+      storyId
+    });
+    return error("AI generation failed", 502);
+  }
+
+  await storeCachedAIResult(env, { cacheKey, resultType: "summary", storyId, resultText: result, model: AI_ACTIONS.summary.model });
+  await createPromptRunEvent(env, {
+    source: "app_api",
+    promptKind: "ai",
+    promptKey: "summary",
+    provider,
+    model: AI_ACTIONS.summary.model,
+    modality: "text",
+    status: "completed",
+    requestExcerpt: JSON.stringify({ storyId, title: summaryTitle }).slice(0, 500),
+    responseExcerpt: String(result).slice(0, 500),
+    storyId
+  });
+  const charge = await finalizeAIRequestCharge(env, revenueCatAppUserId, "summary", cacheKey, gate.cost);
+  const chargeError = aiBillingError(charge);
+  if (chargeError) return chargeError;
+  return json({ result, creditsUsed: gate.cost, balanceAfter: charge.balance, cached: false });
+}
+
+async function handleAITranslate(request, env) {
+  const installation = await requireInstallation(request, env);
+  const body = (await readJson(request)) ?? {};
+  const revenueCatAppUserId = revenueCatAppUserIdForInstallation(installation);
+  const auth = await authorizeAIRequest(env, revenueCatAppUserId, "translation", { requireBalance: false });
+  const authError = aiBillingError(auth);
+  if (authError) return authError;
+
+  if (!hasOpenAIConfig(env)) {
+    log.warn({ event: "ai_provider_unavailable", provider: "openai", action: "translation", reason: "missing_api_key" });
+    return error("AI provider unavailable", 503, { code: "ai_provider_unavailable", provider: "openai" });
+  }
+
+  const payload = await buildTranslationPayload(env, body);
+  if (!payload.storyId || !payload.targetLanguage) {
+    return error("storyId and targetLanguage are required", 422);
+  }
+
+  const receiptKey = {
+    subscriberId: revenueCatAppUserId,
+    action: "translation",
+    storyId: payload.storyId,
+    targetLanguage: payload.targetLanguage,
+    contentHash: payload.contentHash
+  };
+  const alreadyCharged = await hasAIRequestReceipt(env, receiptKey);
+
+  if (!alreadyCharged) {
+    const balanceGate = await ensureAIRequestBalance(env, revenueCatAppUserId, "translation");
+    const balanceError = aiBillingError(balanceGate);
+    if (balanceError) return balanceError;
+  }
+
+  const cacheKey = translationCacheKey(payload);
+  const cached = await getCachedAIResult(env, cacheKey);
+  const cachedTranslation = cached ? parseCachedTranslation(cached.resultText) : null;
+
+  if (cachedTranslation) {
+    await createPromptRunEvent(env, {
+      source: "app_api",
+      promptKind: "ai",
+      promptKey: "translation",
+      provider: "openai",
+      model: AI_ACTIONS.translation.model,
+      modality: "text",
+      status: "cached",
+      latencyMs: 0,
+      cacheHit: true,
+      requestExcerpt: JSON.stringify(payload).slice(0, 500),
+      responseExcerpt: JSON.stringify(cachedTranslation).slice(0, 500),
+      storyId: payload.storyId
+    });
+    let charge = null;
+    if (!alreadyCharged) {
+      charge = await finalizeAIRequestCharge(env, revenueCatAppUserId, "translation", cacheKey, auth.cost);
+      const chargeError = aiBillingError(charge);
+      if (chargeError) return chargeError;
+      await storeAIRequestReceipt(env, receiptKey);
+    }
+
+    return json({
+      ...cachedTranslation,
+      creditsUsed: alreadyCharged ? 0 : auth.cost,
+      balanceAfter: alreadyCharged ? null : charge.balance,
+      cached: true,
+      charged: !alreadyCharged
+    });
+  }
+
+  const result = await generateStructuredTranslation(env, payload);
+  if (!result) {
+    await createPromptRunEvent(env, {
+      source: "app_api",
+      promptKind: "ai",
+      promptKey: "translation",
+      provider: "openai",
+      model: AI_ACTIONS.translation.model,
+      modality: "text",
+      status: "failed",
+      requestExcerpt: JSON.stringify(payload).slice(0, 500),
+      errorText: "AI generation failed",
+      storyId: payload.storyId
+    });
+    return error("AI generation failed", 502);
+  }
+
+  const responsePayload = {
+    story: result.story,
+    comments: result.comments,
+    targetLanguage: payload.targetLanguage,
+    contentHash: payload.contentHash
+  };
+
+  await storeCachedAIResult(env, {
+    cacheKey,
+    resultType: "translation",
+    storyId: payload.storyId,
+    resultText: JSON.stringify(responsePayload),
+    model: AI_ACTIONS.translation.model,
+    expiresAt: translationCacheExpiryIso()
+  });
+
+  await createPromptRunEvent(env, {
+    source: "app_api",
+    promptKind: "ai",
+    promptKey: "translation",
+    provider: "openai",
+    model: AI_ACTIONS.translation.model,
+    modality: "text",
+    status: "completed",
+    requestExcerpt: JSON.stringify(payload).slice(0, 500),
+    responseExcerpt: JSON.stringify(responsePayload).slice(0, 500),
+    storyId: payload.storyId
+  });
+
+  if (alreadyCharged) {
+    return json({
+      ...responsePayload,
+      creditsUsed: 0,
+      balanceAfter: null,
+      cached: false,
+      charged: false
+    });
+  }
+
+  const charge = await finalizeAIRequestCharge(env, revenueCatAppUserId, "translation", cacheKey, auth.cost);
+  const chargeError = aiBillingError(charge);
+  if (chargeError) return chargeError;
+  await storeAIRequestReceipt(env, receiptKey);
+
+  return json({
+    ...responsePayload,
+    creditsUsed: auth.cost,
+    balanceAfter: charge.balance,
+    cached: false,
+    charged: true
+  });
+}
+
+async function handleAIThreadIntelligence(request, env) {
+  return handleStructuredCachedAIRequest(request, env, {
+    actionKey: "thread_intelligence",
+    buildPayload: buildThreadIntelligencePayload,
+    validatePayload: (payload) => {
+      if (!payload.storyId) return "storyId is required";
+      if (!payload.title) return "title is required";
+      if (!payload.comments.length) return "comments are required";
+      return null;
+    },
+    cacheKeyFor: threadIntelligenceCacheKey,
+    parseCached: parseCachedThreadIntelligence,
+    generate: (payload) => generateThreadIntelligence(env, payload),
+    toResponsePayload: (payload, result) => ({
+      summary: result.summary,
+      keyInsights: result.keyInsights,
+      discussionShape: result.discussionShape,
+      contentHash: payload.contentHash
+    })
+  });
+}
+
+async function handleAIExplain(request, env) {
+  const body = (await readJson(request.clone())) ?? {};
+  const level = normalizeText(body.level).toLowerCase() === "simple" ? "simple" : "technical";
+  const actionKey = level === "simple" ? "explain_simple" : "explain_technical";
+  const provider = await resolveAIProvider(env, actionKey);
+
+  return handleStructuredCachedAIRequest(request, env, {
+    actionKey,
+    provider,
+    buildPayload: async () => {
+      const storyId = Number(body.storyId);
+
+      if (provider === "cloudflare") {
+        const articleUrl = await resolveArticleUrl(env, storyId, { url: body.url ?? null });
+        if (articleUrl) {
+          return buildExplainPayload({ ...body, storyId, title: body.title ?? "", text: "", url: articleUrl, level, _cfCrawl: true }, level);
+        }
+        log.info({ event: "provider_fallback", provider: "cloudflare", fallback: "openai", reason: "no_url", storyId, action: actionKey });
+      }
+
+      const article = await resolveArticleContent(env, storyId, {
+        title: body.title ?? "",
+        text: body.text ?? "",
+        url: body.url ?? null
+      });
+      return buildExplainPayload({ ...body, storyId, title: article.title || (body.title ?? ""), text: article.text, level }, level);
+    },
+    validatePayload: (payload) => {
+      if (!payload.storyId) return "storyId is required";
+      if (!payload.title) return "title is required";
+      if (!payload._cfCrawl && !payload.text) return "text is required";
+      return null;
+    },
+    cacheKeyFor: explainCacheKey,
+    parseCached: parseCachedExplain,
+    generate: (payload) => {
+      if (payload._cfCrawl && payload.url) {
+        return generateExplainViaCrawl(env, payload.url, payload.storyId, payload.title, payload.level);
+      }
+      return generateExplain(env, payload);
+    },
+    toResponsePayload: (payload, result) => ({
+      title: result.title,
+      sections: result.sections,
+      followUps: result.followUps,
+      level: result.level,
+      contentHash: payload.contentHash
+    }),
+    resultType: actionKey
+  });
+}
+
+async function handleGetCredits(request, env) {
+  const installation = await requireInstallation(request, env);
+  const revenueCatAppUserId = revenueCatAppUserIdForInstallation(installation);
+  const subscriber = await getSubscriberInfo(env, revenueCatAppUserId);
+  const balance = await getCreditBalance(env, revenueCatAppUserId);
+  return json({
+    balance,
+    isPro: subscriber?.isPro ?? false,
+    costs: CREDIT_COSTS,
+    features: listAIFeatures()
+  });
+}
+
+const ROUTES = [
+  { method: "GET",   path: "/health",               name: "health",           handler: (r, e) => json({ ok: true, service: e.APP_NAME ?? "NewsRoll Backend", environment: e.ENVIRONMENT ?? "unknown" }) },
+  { method: "POST",  path: "/v1/installations",      name: "installations",    handler: handleInstallations },
+  { method: "PATCH", path: "/v1/installations",      name: "update_install",   handler: handleUpdateInstallation },
+  { method: "GET",   path: "/v1/config",             name: "config",           handler: handleConfig },
+  { method: "GET",   path: "/v1/visual-feed",        name: "visual_feed",      handler: handleVisualFeed },
+  { method: "POST",  path: "/v1/events",             name: "events",          handler: handleEvents },
+  { method: "GET",   path: "/v1/feed/for-you",        name: "feed_for_you",    handler: handleForYouFeed },
+  { method: "POST",  path: "/v1/ai/summary",          name: "ai_summary",      handler: handleAISummary },
+  { method: "POST",  path: "/v1/ai/translate",         name: "ai_translate",    handler: handleAITranslate },
+  { method: "POST",  path: "/v1/ai/thread-intelligence", name: "ai_thread_intelligence", handler: handleAIThreadIntelligence },
+  { method: "POST",  path: "/v1/ai/explain",           name: "ai_explain",      handler: handleAIExplain },
+  { method: "GET",   path: "/v1/credits",              name: "credits",         handler: handleGetCredits },
+];
+
+async function routeRequest(request, env) {
+  const url = new URL(request.url);
+  const segments = url.pathname.split("/").filter(Boolean);
+
+  if (request.method === "OPTIONS") {
+    return { response: new Response(null, { status: 204, headers: CORS_HEADERS }), route: "cors_preflight" };
+  }
+
+  for (const route of ROUTES) {
+    if (request.method === route.method && url.pathname === route.path) {
+      const response = await route.handler(request, env);
+      return { response, route: route.name };
+    }
+  }
+
+  // Dynamic segment routes
+  if (request.method === "GET" && segments[0] === "v1" && segments[1] === "stories" && segments[2] && segments[3] === "article") {
+    const response = await handleReadableArticle(env, segments[2]);
+    return { response, route: "readable_article" };
+  }
+  if (request.method === "GET" && segments[0] === "media" && segments[1]) {
+    const response = await handleMediaAsset(env, segments.slice(1).join("/"));
+    return { response, route: "media_asset" };
+  }
+
+  return { response: error("Route not found", 404), route: null };
+}
+
+async function responseLogFields(response) {
+  if (!(response instanceof Response) || response.status < 400) {
+    return {};
+  }
+
+  const bodyText = await response.clone().text().catch(() => "");
+  if (!bodyText) {
+    return {};
+  }
+
+  try {
+    const payload = JSON.parse(bodyText);
+    const details = payload?.details;
+    return {
+      errorMessage: typeof payload?.error === "string" ? payload.error : undefined,
+      errorCode: typeof details?.code === "string" ? details.code : undefined,
+      detailsSnippet: details == null
+        ? undefined
+        : (typeof details === "string" ? details : JSON.stringify(details)).slice(0, 300),
+      bodySnippet: typeof payload?.error === "string" ? undefined : bodyText.slice(0, 300)
+    };
+  } catch {
+    return {
+      bodySnippet: bodyText.slice(0, 300)
+    };
+  }
+}
+
+export default {
+  async fetch(request, env) {
+    const start = Date.now();
+    const rid = log.requestId(request);
+    const meta = log.requestMeta(request);
+    try {
+      const { response, route } = await routeRequest(request, env);
+      const durationMs = Date.now() - start;
+      const logFn = response.status >= 400 ? log.warn : log.info;
+      logFn({
+        event: "request",
+        rid,
+        route: route ?? "not_found",
+        ...meta,
+        status: response.status,
+        durationMs,
+        ...(await responseLogFields(response))
+      });
+      return withCors(response);
+    } catch (thrown) {
+      const durationMs = Date.now() - start;
+      if (thrown instanceof Response) {
+        log.warn({
+          event: "request",
+          rid,
+          route: "thrown_response",
+          ...meta,
+          status: thrown.status,
+          durationMs,
+          ...(await responseLogFields(thrown))
+        });
+        return withCors(thrown);
+      }
+      log.error({
+        event: "request_error",
+        rid,
+        ...meta,
+        durationMs,
+        ...log.fmtError(thrown),
+      });
+      return withCors(error(thrown instanceof Error ? thrown.message : "Unexpected error", 500));
+    }
+  }
+};
