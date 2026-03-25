@@ -289,7 +289,7 @@ function env(overrides = {}) {
 
 test("admin worker requires a valid admin session for protected routes", async () => {
   const response = await adminWorker.fetch(
-    new Request("https://admin.newsroll.com/api/prompts"),
+    new Request("https://admin.newsroll.app/api/prompts"),
     env()
   );
 
@@ -299,7 +299,7 @@ test("admin worker requires a valid admin session for protected routes", async (
 test("admin worker login establishes a session and session endpoint sees it", async () => {
   const testEnv = env();
   const login = await adminWorker.fetch(
-    new Request("https://admin.newsroll.com/api/auth/login", {
+    new Request("https://admin.newsroll.app/api/auth/login", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ username: "admin", password: "secret" })
@@ -312,7 +312,7 @@ test("admin worker login establishes a session and session endpoint sees it", as
   assert.ok(cookie?.includes("hr_admin_session="));
 
   const session = await adminWorker.fetch(
-    new Request("https://admin.newsroll.com/api/auth/session", {
+    new Request("https://admin.newsroll.app/api/auth/session", {
       headers: { cookie }
     }),
     testEnv
@@ -326,7 +326,7 @@ test("admin worker login establishes a session and session endpoint sees it", as
 
 test("admin worker echoes allowed preview origins for credentialed requests", async () => {
   const response = await adminWorker.fetch(
-    new Request("https://admin-staging.newsroll.com/api/auth/session", {
+    new Request("https://admin-staging.newsroll.app/api/auth/session", {
       headers: {
         origin: "https://newsrolladmin.pages.dev"
       }
@@ -342,7 +342,7 @@ test("admin worker echoes allowed preview origins for credentialed requests", as
 
 test("admin worker handles allowed preflight requests", async () => {
   const response = await adminWorker.fetch(
-    new Request("https://admin-staging.newsroll.com/api/auth/session", {
+    new Request("https://admin-staging.newsroll.app/api/auth/session", {
       method: "OPTIONS",
       headers: {
         origin: "https://newsrolladmin.pages.dev"
@@ -360,7 +360,7 @@ test("admin worker handles allowed preflight requests", async () => {
 test("admin worker updates AI prompts and exposes prompt listing", async () => {
   const testEnv = env();
   const login = await adminWorker.fetch(
-    new Request("https://admin.newsroll.com/api/auth/login", {
+    new Request("https://admin.newsroll.app/api/auth/login", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ username: "admin", password: "secret" })
@@ -370,7 +370,7 @@ test("admin worker updates AI prompts and exposes prompt listing", async () => {
   const cookie = login.headers.get("set-cookie");
 
   const update = await adminWorker.fetch(
-    new Request("https://admin.newsroll.com/api/prompts/ai/summary", {
+    new Request("https://admin.newsroll.app/api/prompts/ai/summary", {
       method: "PUT",
       headers: {
         "content-type": "application/json",
@@ -388,7 +388,7 @@ test("admin worker updates AI prompts and exposes prompt listing", async () => {
   assert.equal(update.status, 200);
 
   const prompts = await adminWorker.fetch(
-    new Request("https://admin.newsroll.com/api/prompts", {
+    new Request("https://admin.newsroll.app/api/prompts", {
       headers: { cookie }
     }),
     testEnv
@@ -439,7 +439,7 @@ test("admin worker exposes a dynamic model catalog with pricing", async () => {
 
   try {
     const login = await adminWorker.fetch(
-      new Request("https://admin.newsroll.com/api/auth/login", {
+      new Request("https://admin.newsroll.app/api/auth/login", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ username: "admin", password: "secret" })
@@ -449,7 +449,7 @@ test("admin worker exposes a dynamic model catalog with pricing", async () => {
     const cookie = login.headers.get("set-cookie");
 
     const response = await adminWorker.fetch(
-      new Request("https://admin.newsroll.com/api/model-catalog", {
+      new Request("https://admin.newsroll.app/api/model-catalog", {
         headers: { cookie }
       }),
       testEnv
@@ -497,7 +497,7 @@ test("admin worker runs AI tests with a temporary prompt override", async () => 
 
   try {
     const login = await adminWorker.fetch(
-      new Request("https://admin.newsroll.com/api/auth/login", {
+      new Request("https://admin.newsroll.app/api/auth/login", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ username: "admin", password: "secret" })
@@ -507,7 +507,7 @@ test("admin worker runs AI tests with a temporary prompt override", async () => 
     const cookie = login.headers.get("set-cookie");
 
     const response = await adminWorker.fetch(
-      new Request("https://admin.newsroll.com/api/test/ai", {
+      new Request("https://admin.newsroll.app/api/test/ai", {
         method: "POST",
         headers: {
           "content-type": "application/json",
@@ -563,7 +563,7 @@ test("admin worker AI summary test uses provided text when available", async () 
 
   try {
     const login = await adminWorker.fetch(
-      new Request("https://admin.newsroll.com/api/auth/login", {
+      new Request("https://admin.newsroll.app/api/auth/login", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ username: "admin", password: "secret" })
@@ -573,7 +573,7 @@ test("admin worker AI summary test uses provided text when available", async () 
     const cookie = login.headers.get("set-cookie");
 
     const response = await adminWorker.fetch(
-      new Request("https://admin.newsroll.com/api/test/ai", {
+      new Request("https://admin.newsroll.app/api/test/ai", {
         method: "POST",
         headers: { "content-type": "application/json", cookie },
         body: JSON.stringify({
@@ -634,7 +634,7 @@ test("admin worker runs an image test and includes the run in stats", async () =
 
   try {
     const login = await adminWorker.fetch(
-      new Request("https://admin.newsroll.com/api/auth/login", {
+      new Request("https://admin.newsroll.app/api/auth/login", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ username: "admin", password: "secret" })
@@ -644,7 +644,7 @@ test("admin worker runs an image test and includes the run in stats", async () =
     const cookie = login.headers.get("set-cookie");
 
     const imageTest = await adminWorker.fetch(
-      new Request("https://admin.newsroll.com/api/test/image", {
+      new Request("https://admin.newsroll.app/api/test/image", {
         method: "POST",
         headers: {
           "content-type": "application/json",
@@ -666,7 +666,7 @@ test("admin worker runs an image test and includes the run in stats", async () =
     assert.equal(imagePayload.costEstimated, true);
 
     const overview = await adminWorker.fetch(
-      new Request("https://admin.newsroll.com/api/stats/overview", {
+      new Request("https://admin.newsroll.app/api/stats/overview", {
         headers: { cookie }
       }),
       testEnv

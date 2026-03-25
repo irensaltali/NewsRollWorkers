@@ -21,7 +21,7 @@
 	},
 	"routes": [
 		{
-			"pattern": "admin.newsroll.com",
+			"pattern": "admin.newsroll.app",
 			"custom_domain": true
 		}
 	],
@@ -68,7 +68,7 @@
 			},
 			"routes": [
 				{
-					"pattern": "admin-staging.newsroll.com",
+					"pattern": "admin-staging.newsroll.app",
 					"custom_domain": true
 				}
 			],

@@ -29,5 +29,5 @@ For the admin surface:
 - No user login required — all access is via anonymous installation tokens.
 - Multi-source ingestion is currently a stub; future work adds RSS, Reddit, and other source adapters.
 - AI routes require `OPENAI_API_KEY` in every deployed environment.
-- Admin routes are served by the dedicated `newsroll-admin` worker on `admin.newsroll.com` and `admin-staging.newsroll.com`.
+- Admin routes are served by the dedicated `newsroll-admin` worker on `admin.newsroll.app` and `admin-staging.newsroll.app`.
 - Admin access uses a DB-backed username/password session stored in D1.

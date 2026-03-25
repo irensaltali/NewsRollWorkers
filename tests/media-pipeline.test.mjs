@@ -19,13 +19,13 @@ test("FAL image request uses flux-2/turbo settings", () => {
 test("publicMediaUrlFor prefers the explicit media host when configured", () => {
   const mediaUrl = publicMediaUrlFor(
     {
-      PUBLIC_API_BASE_URL: "https://api-staging.newsroll.com",
-      PUBLIC_MEDIA_BASE_URL: "https://media-staging.newsroll.com/"
+      PUBLIC_API_BASE_URL: "https://api-staging.newsroll.app",
+      PUBLIC_MEDIA_BASE_URL: "https://media-staging.newsroll.app/"
     },
     "stories/example.jpg"
   );
 
-  assert.equal(mediaUrl, "https://media-staging.newsroll.com/stories/example.jpg");
+  assert.equal(mediaUrl, "https://media-staging.newsroll.app/stories/example.jpg");
 });
 
 // --- Daily media limit tests ---
