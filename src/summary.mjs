@@ -1,6 +1,6 @@
 import * as log from "./log.mjs";
 import { AI_ACTIONS } from "./ai-actions.mjs";
-import { getAIPromptConfig } from "./d1.mjs";
+import { getAIPromptConfig } from "./db.mjs";
 import { buildPromptInput, clipPromptText, promptConfigWithFallback } from "./prompt-config.mjs";
 
 export async function buildHeadlineRequest(envOrTitle, titleOrText, extractedTextArg, optionsArg = {}) {

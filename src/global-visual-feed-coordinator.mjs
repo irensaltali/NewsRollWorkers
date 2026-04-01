@@ -3,7 +3,7 @@ import {
   getMaxPublishedVisualFeedSequence,
   isStoryPublished,
   publishReadyStory
-} from "./d1.mjs";
+} from "./db.mjs";
 import { error, json, readJson } from "./http.mjs";
 import * as log from "./log.mjs";
 import {

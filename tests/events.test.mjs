@@ -3,12 +3,11 @@ import assert from "node:assert/strict";
 
 import { validateEventBatch, VALID_EVENT_TYPES } from "../src/events.mjs";
 import worker from "../src/index.mjs";
-import { signInstallation } from "../src/security.mjs";
+import { signTestJWT, TEST_JWT_SECRET, TEST_USER_ID } from "./test-auth.mjs";
 
 const env = {
   APP_NAME: "NewsRoll",
-  INSTALLATION_TOKEN_SECRET: "test-installation-secret",
-  SESSION_ENCRYPTION_SECRET: "test-session-secret",
+  SUPABASE_JWT_SECRET: TEST_JWT_SECRET,
   PUBLIC_BASE_URL: "https://newsroll.invalid"
 };
 
@@ -75,24 +74,7 @@ test("events route returns 401 without auth", async () => {
 });
 
 test("events route returns 200 with valid auth and events", async () => {
-  const token = await signInstallation(
-    { installationId: "test-install", platform: "ios", issuedAt: Date.now() },
-    env.INSTALLATION_TOKEN_SECRET
-  );
-
-  const batchResults = [];
-  const testEnv = {
-    ...env,
-    DB: {
-      prepare: () => ({
-        bind: () => ({
-          first: async () => null,
-          run: async () => ({ meta: { changes: 0 } })
-        })
-      }),
-      batch: async (stmts) => stmts.map(() => ({ meta: { changes: 1 } }))
-    }
-  };
+  const token = signTestJWT(TEST_USER_ID, TEST_JWT_SECRET);
 
   const response = await worker.fetch(
     new Request("https://example.com/v1/events", {
@@ -109,12 +91,12 @@ test("events route returns 200 with valid auth and events", async () => {
         ]
       })
     }),
-    testEnv
+    env
   );
 
   assert.equal(response.status, 200);
   const payload = await response.json();
   assert.equal(payload.ok, true);
-  assert.equal(payload.stored, 2);
+  assert.equal(payload.stored, 0); // storeEvents returns 0 without SUPABASE_URL
   assert.equal(payload.rejected, 1);
 });

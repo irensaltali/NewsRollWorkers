@@ -6,7 +6,7 @@ import {
   getRandomActivePromptTemplate,
   reserveMediaQueueSlot,
   releaseMediaQueueSlot
-} from "./d1.mjs";
+} from "./db.mjs";
 import { generateHeadline } from "./summary.mjs";
 import {
   publicMediaUrlFor,
@@ -17,6 +17,7 @@ import {
 import { resolveArticleContent } from "./article-content.mjs";
 import { publishReadyStoryViaCoordinator } from "./global-visual-feed-coordinator.mjs";
 import { enrichPublishedStory } from "./enrichment.mjs";
+import { ingestCategory } from "./rss-ingest.mjs";
 import * as log from "./log.mjs";
 import { readableUrlFor } from "./visual-feed.mjs";
 import { buildFalImageRequest, generateImageWithProvider } from "./media-generation.mjs";
@@ -75,10 +76,8 @@ async function enqueueStoryForMedia(env, endpoint, story) {
   }
 }
 
-// TODO: Implement multi-source ingestion. Each source adapter should call
-// enqueueStoryForMedia() for stories that pass the quality gate.
 export async function ingestStories(env, category) {
-  log.info({ event: "ingest_noop", category, message: "Multi-source ingestion not yet implemented" });
+  await ingestCategory(env, category);
 }
 
 function generatePrompt(template, payload) {

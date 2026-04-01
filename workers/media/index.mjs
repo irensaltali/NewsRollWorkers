@@ -3,8 +3,8 @@ import { FEED_CATEGORIES } from "../../src/config.mjs";
 import { GlobalVisualFeedCoordinator } from "../../src/global-visual-feed-coordinator.mjs";
 import { enrichPublishedStory, extractTopicsLLM } from "../../src/enrichment.mjs";
 import { aggregateStaleProfiles } from "../../src/profile-aggregator.mjs";
-import { updateStoryStats, cleanupOldEvents } from "../../src/stats-updater.mjs";
-import { cleanupStaleMedia, getPromptTemplateStats } from "../../src/d1.mjs";
+import { updateStoryStats, cleanupOldEvents, updateVelocitySignals } from "../../src/stats-updater.mjs";
+import { cleanupStaleMedia, getPromptTemplateStats, getUnenrichedStoryIds, updatePublishedFeedEntryTopics } from "../../src/db.mjs";
 import * as log from "../../src/log.mjs";
 
 export { GlobalVisualFeedCoordinator };
@@ -45,18 +45,12 @@ export default {
     }
     // Backfill enrichment for stories missing topics
     try {
-      if (env?.DB?.prepare) {
-        const unenriched = await env.DB.prepare(
-          `SELECT story_id AS storyId FROM published_feed_entries
-           WHERE topics = '[]' OR topics IS NULL
-           LIMIT 50`
-        ).all();
-        for (const row of (unenriched.results ?? [])) {
-          try {
-            await enrichPublishedStory(env, row.storyId);
-          } catch (err) {
-            log.warn({ event: "backfill_enrich_fail", storyId: row.storyId, ...log.fmtError(err) });
-          }
+      const unenrichedIds = await getUnenrichedStoryIds(env, 50);
+      for (const storyId of unenrichedIds) {
+        try {
+          await enrichPublishedStory(env, storyId);
+        } catch (err) {
+          log.warn({ event: "backfill_enrich_fail", storyId, ...log.fmtError(err) });
         }
       }
     } catch (err) {
@@ -75,6 +69,13 @@ export default {
       await updateStoryStats(env);
     } catch (err) {
       log.error({ event: "stats_update_fail", ...log.fmtError(err) });
+    }
+
+    // Refresh velocity signals and sync active items to Shaped
+    try {
+      await updateVelocitySignals(env);
+    } catch (err) {
+      log.error({ event: "velocity_signals_fail", ...log.fmtError(err) });
     }
 
     // Monthly cleanup of old events (runs every cron but only deletes >30 day old)
@@ -122,10 +123,8 @@ export default {
       try {
         const { storyId, title, text } = message.body;
         const topics = await extractTopicsLLM(env, storyId, title, text);
-        if (topics && env?.DB?.prepare) {
-          await env.DB.prepare(
-            "UPDATE published_feed_entries SET topics = ?1 WHERE story_id = ?2"
-          ).bind(JSON.stringify(topics), storyId).run();
+        if (topics) {
+          await updatePublishedFeedEntryTopics(env, storyId, topics);
           log.info({ event: "topic_llm_updated", storyId, topics });
         }
         message.ack();

@@ -11,7 +11,6 @@ fi
 API_CONFIG="workers/api/wrangler.jsonc"
 ADMIN_CONFIG="workers/admin/wrangler.jsonc"
 MEDIA_CONFIG="workers/media/wrangler.jsonc"
-DB_NAME="newsroll-staging"
 
 if [ "$ENV" = "staging" ]; then
   API_SCRIPT_NAME="newsroll-workers-staging"
@@ -25,11 +24,22 @@ fi
 
 FAILED=0
 
+# ── 0. Ensure pnpm is available ──────────────────────────────────────
+if ! command -v pnpm &>/dev/null; then
+  echo "--- pnpm not found — installing via npm ---"
+  npm install -g pnpm
+fi
+
 echo "==> Deploying all workers (${ENV})"
 echo ""
 
+echo "--- Installing Workers dependencies ---"
+pnpm install
+echo ""
+
 echo "--- Building NewsRoll Admin UI ---"
-if npm --prefix ../NewsRollAdmin run build; then
+pnpm --prefix ../NewsRollAdmin install
+if pnpm --prefix ../NewsRollAdmin run build; then
   echo "  ✓ Admin UI built"
 else
   echo "  ✗ Admin UI build failed — aborting deploy"
@@ -37,17 +47,7 @@ else
 fi
 echo ""
 
-# ── 1. Apply D1 migrations ──────────────────────────────────────────
-echo "--- Applying D1 migrations (${DB_NAME}, ${ENV}) ---"
-if npx wrangler d1 migrations apply "$DB_NAME" --remote --config "$API_CONFIG" $ENV_FLAG; then
-  echo "  ✓ Migrations applied"
-else
-  echo "  ✗ Migration failed — aborting deploy"
-  exit 1
-fi
-echo ""
-
-# ── 2. Detach stale queue consumer ───────────────────────────────────
+# ── 1. Detach stale queue consumer ───────────────────────────────────
 echo "--- Detaching stale API queue consumer (${API_SCRIPT_NAME} <- ${MEDIA_QUEUE_NAME}) ---"
 if QUEUE_INFO=$(npx wrangler queues info "$MEDIA_QUEUE_NAME" 2>&1); then
   if printf '%s\n' "$QUEUE_INFO" | grep -Fq "worker:${API_SCRIPT_NAME}"; then
@@ -64,7 +64,7 @@ else
 fi
 echo ""
 
-# ── 3. Deploy workers ────────────────────────────────────────────────
+# ── 2. Deploy workers ────────────────────────────────────────────────
 WORKERS=("$API_CONFIG" "$ADMIN_CONFIG" "$MEDIA_CONFIG")
 LABELS=("API" "Admin" "Media")
 

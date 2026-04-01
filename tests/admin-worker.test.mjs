@@ -354,7 +354,7 @@ test("admin worker handles allowed preflight requests", async () => {
   assert.equal(response.status, 204);
   assert.equal(response.headers.get("access-control-allow-origin"), "https://newsrolladmin.pages.dev");
   assert.equal(response.headers.get("access-control-allow-credentials"), "true");
-  assert.equal(response.headers.get("access-control-allow-methods"), "GET, POST, PUT, OPTIONS");
+  assert.equal(response.headers.get("access-control-allow-methods"), "GET, POST, PUT, PATCH, DELETE, OPTIONS");
 });
 
 test("admin worker updates AI prompts and exposes prompt listing", async () => {

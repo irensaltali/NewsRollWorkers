@@ -1,4 +1,4 @@
-import { getReadableContent, storeReadableContent } from "./d1.mjs";
+import { getReadableContent, storeReadableContent } from "./db.mjs";
 import { crawlUrl } from "./browser-rendering.mjs";
 import * as log from "./log.mjs";
 

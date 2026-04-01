@@ -15,8 +15,13 @@ import {
   selectPromptTestResult,
   updatePromptTestResultNotes,
   upsertAIPromptConfig,
-  upsertPromptTemplate
-} from "./d1.mjs";
+  upsertPromptTemplate,
+  getRSSSources,
+  getRSSSourceById,
+  upsertRSSSource,
+  setRSSSourceActive
+} from "./db.mjs";
+import { ingestSource } from "./rss-ingest.mjs";
 import { error, json, readJson } from "./http.mjs";
 import {
   attachAdminSessionCookie,
@@ -41,6 +46,54 @@ import { buildPromptInput, clipPromptText, promptConfigWithFallback, mediaTempla
 import { generateImageWithProvider, generateVideoWithProvider, proxyOpenAIVideoContent } from "./media-generation.mjs";
 // TODO: Replace with multi-source fetch when source adapters are implemented
 async function fetchItem(_id) { return null; }
+
+// ── RSS source handlers ───────────────────────────────────────────────────────
+
+async function handleListRSSSources(request, env) {
+  await requireAdmin(request, env);
+  const url = new URL(request.url);
+  const category = url.searchParams.get("category") ?? null;
+  const sources = await getRSSSources(env, { category, activeOnly: false });
+  return json({ ok: true, sources });
+}
+
+async function handleCreateRSSSource(request, env) {
+  await requireAdmin(request, env);
+  const body = await readJson(request);
+  if (!body?.name || !body?.feed_url || !body?.category) {
+    return error("name, feed_url, and category are required", 400);
+  }
+  const id = await upsertRSSSource(env, body);
+  await createAdminAuditLog(env, { action: "rss_source_create", detail: JSON.stringify({ id, name: body.name }) });
+  return json({ ok: true, id }, 201);
+}
+
+async function handleUpdateRSSSource(request, env, id) {
+  await requireAdmin(request, env);
+  const source = await getRSSSourceById(env, Number(id));
+  if (!source) return error("RSS source not found", 404);
+  const body = await readJson(request);
+  await upsertRSSSource(env, { ...source, ...body, id: Number(id) });
+  await createAdminAuditLog(env, { action: "rss_source_update", detail: JSON.stringify({ id }) });
+  return json({ ok: true });
+}
+
+async function handleDeleteRSSSource(request, env, id) {
+  await requireAdmin(request, env);
+  const source = await getRSSSourceById(env, Number(id));
+  if (!source) return error("RSS source not found", 404);
+  await setRSSSourceActive(env, Number(id), false);
+  await createAdminAuditLog(env, { action: "rss_source_deactivate", detail: JSON.stringify({ id }) });
+  return json({ ok: true });
+}
+
+async function handleFetchRSSSource(request, env, id) {
+  await requireAdmin(request, env);
+  const source = await getRSSSourceById(env, Number(id));
+  if (!source) return error("RSS source not found", 404);
+  const result = await ingestSource(env, source);
+  return json({ ok: true, ...result });
+}
 import { resolveArticleContent, resolveArticleUrl } from "./article-content.mjs";
 import { listAIFeatures } from "./ai-feature-config.mjs";
 import * as log from "./log.mjs";
@@ -57,7 +110,7 @@ function adminApiPath(pathname) {
   return pathname.startsWith("/api/") ? pathname.slice("/api".length) || "/" : pathname;
 }
 
-const ADMIN_CORS_METHODS = "GET, POST, PUT, OPTIONS";
+const ADMIN_CORS_METHODS = "GET, POST, PUT, PATCH, DELETE, OPTIONS";
 const ADMIN_CORS_HEADERS = "Content-Type";
 const ADMIN_CORS_MAX_AGE = "86400";
 const ALLOWED_ADMIN_ORIGIN_PATTERNS = [
@@ -1075,6 +1128,22 @@ export default {
       }
       if (request.method === "GET" && path === "/health") {
         return withAdminCors(request, json({ ok: true, service: "newsroll-admin", environment: env.ENVIRONMENT ?? "unknown" }));
+      }
+      // RSS source management
+      if (request.method === "GET" && path === "/rss-sources") {
+        return withAdminCors(request, await handleListRSSSources(request, env));
+      }
+      if (request.method === "POST" && path === "/rss-sources") {
+        return withAdminCors(request, await handleCreateRSSSource(request, env));
+      }
+      if (request.method === "PATCH" && path.startsWith("/rss-sources/") && !path.endsWith("/fetch")) {
+        return withAdminCors(request, await handleUpdateRSSSource(request, env, path.slice("/rss-sources/".length)));
+      }
+      if (request.method === "DELETE" && path.startsWith("/rss-sources/")) {
+        return withAdminCors(request, await handleDeleteRSSSource(request, env, path.slice("/rss-sources/".length)));
+      }
+      if (request.method === "POST" && path.startsWith("/rss-sources/") && path.endsWith("/fetch")) {
+        return withAdminCors(request, await handleFetchRSSSource(request, env, path.slice("/rss-sources/".length, -"/fetch".length)));
       }
 
       return withAdminCors(request, error("Route not found", 404));

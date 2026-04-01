@@ -4,17 +4,15 @@ import {
   getAIPromptConfig,
   getCachedAIResult,
   createPromptRunEvent,
-  getInstallation,
   hasAIRequestReceipt,
   listPublishedVisualFeed,
   storeAIRequestReceipt,
-  storeCachedAIResult,
-  upsertInstallation
-} from "./d1.mjs";
+  storeCachedAIResult
+} from "./db.mjs";
 import { error, json, readJson, bearerToken } from "./http.mjs";
 import * as log from "./log.mjs";
 
-import { signInstallation, verifyInstallation } from "./security.mjs";
+import { verifySupabaseJWT } from "./security.mjs";
 import {
   buildVisualFeedResponse,
   parseVisualFeedCursor,
@@ -299,9 +297,11 @@ async function handleStructuredCachedAIRequest(request, env, {
   resultType = actionKey,
   provider = "openai"
 }) {
-  const installation = await requireInstallation(request, env);
+  const user = await requireUser(request, env);
+  const userErr = guardUser(user);
+  if (userErr) return userErr;
   const body = (await readJson(request)) ?? {};
-  const revenueCatAppUserId = revenueCatAppUserIdForInstallation(installation);
+  const revenueCatAppUserId = revenueCatAppUserIdForUser(user);
   const auth = await authorizeAIRequest(env, revenueCatAppUserId, actionKey, { requireBalance: false });
   const authError = aiBillingError(auth);
   if (authError) return authError;
@@ -432,8 +432,8 @@ async function handleStructuredCachedAIRequest(request, env, {
   });
 }
 
-function revenueCatAppUserIdForInstallation(installation) {
-  return installation?.revenueCatAppUserId ?? installation?.installationId;
+function revenueCatAppUserIdForUser(user) {
+  return user?.userId;
 }
 
 function aiBillingError(result) {
@@ -455,16 +455,29 @@ function aiBillingError(result) {
   return null;
 }
 
-const CORS_HEADERS = {
-  "access-control-allow-origin": "*",
-  "access-control-allow-methods": "GET, POST, PATCH, OPTIONS",
-  "access-control-allow-headers": "Content-Type, Authorization",
-  "access-control-max-age": "86400"
-};
+const ALLOWED_ORIGINS = [
+  "https://admin.newsroll.app",
+  "https://admin-staging.newsroll.app",
+  "https://newsroll.app"
+];
 
-function withCors(response) {
+function corsOrigin(request) {
+  const origin = request?.headers?.get?.("origin") ?? "";
+  return ALLOWED_ORIGINS.includes(origin) ? origin : ALLOWED_ORIGINS[0];
+}
+
+function buildCorsHeaders(request) {
+  return {
+    "access-control-allow-origin": corsOrigin(request),
+    "access-control-allow-methods": "GET, POST, PATCH, OPTIONS",
+    "access-control-allow-headers": "Content-Type, Authorization",
+    "access-control-max-age": "86400"
+  };
+}
+
+function withCors(response, request) {
   const headers = new Headers(response.headers);
-  for (const [key, value] of Object.entries(CORS_HEADERS)) {
+  for (const [key, value] of Object.entries(buildCorsHeaders(request))) {
     headers.set(key, value);
   }
   return new Response(response.body, {
@@ -474,91 +487,23 @@ function withCors(response) {
   });
 }
 
-async function installationContext(request, env) {
+async function userContext(request, env) {
   const token = bearerToken(request);
-  if (!token) {
-    return null;
-  }
+  if (!token) return null;
 
-  const payload = await verifyInstallation(token, env.INSTALLATION_TOKEN_SECRET);
-  if (!payload?.installationId) {
-    return payload;
-  }
-
-  const installation = await getInstallation(env, payload.installationId);
-  if (!installation) {
-    return payload;
-  }
-
-  return {
-    ...payload,
-    platform: installation.platform ?? payload.platform,
-    revenueCatAppUserId: installation.revenueCatAppUserId ?? payload.revenueCatAppUserId
-  };
+  const claims = await verifySupabaseJWT(token, env.SUPABASE_JWT_SECRET);
+  return claims?.sub ? { userId: claims.sub } : null;
 }
 
-async function requireInstallation(request, env) {
-  const payload = await installationContext(request, env);
-  if (!payload?.installationId) {
-    throw new Response(JSON.stringify({ error: "Missing or invalid installation token" }), {
-      status: 401,
-      headers: { "content-type": "application/json" }
-    });
-  }
-  return payload;
+async function requireUser(request, env) {
+  const ctx = await userContext(request, env);
+  if (!ctx?.userId) return null;
+  return ctx;
 }
 
-
-async function handleInstallations(request, env) {
-  const body = (await readJson(request)) ?? {};
-  const installationId = body.installationId ?? crypto.randomUUID();
-  const revenueCatAppUserId = body.revenueCatAppUserId ?? installationId;
-  const installation = {
-    id: installationId,
-    platform: body.platform ?? "ios",
-    appVersion: body.appVersion ?? null,
-    pushToken: body.pushToken ?? null,
-    pushEnabled: Boolean(body.pushEnabled),
-    revenueCatAppUserId,
-    createdAt: now(),
-    updatedAt: now()
-  };
-
-  await upsertInstallation(env, installation);
-  const token = await signInstallation(
-    {
-      installationId,
-      revenueCatAppUserId,
-      platform: installation.platform,
-      issuedAt: Date.now()
-    },
-    env.INSTALLATION_TOKEN_SECRET
-  );
-
-  log.info({ event: "installation_created", installationId, platform: installation.platform, appVersion: installation.appVersion });
-  return json({
-    installationId,
-    revenueCatAppUserId,
-    token,
-    config: buildAppConfig(env)
-  });
-}
-
-async function handleUpdateInstallation(request, env) {
-  const installation = await requireInstallation(request, env);
-  const body = (await readJson(request)) ?? {};
-  const revenueCatAppUserId = body.revenueCatAppUserId ?? installation.revenueCatAppUserId ?? installation.installationId;
-  await upsertInstallation(env, {
-    id: installation.installationId,
-    platform: body.platform ?? installation.platform ?? "ios",
-    appVersion: body.appVersion ?? null,
-    pushToken: body.pushToken ?? null,
-    pushEnabled: Boolean(body.pushEnabled),
-    revenueCatAppUserId,
-    createdAt: now(),
-    updatedAt: now()
-  });
-  return json({ ok: true, revenueCatAppUserId });
+function guardUser(user) {
+  if (!user) return error("Missing or invalid token", 401);
+  return null;
 }
 
 async function handleConfig(_request, env) {
@@ -599,7 +544,9 @@ async function handleReadableArticle(env, storyId) {
 }
 
 async function handleEvents(request, env) {
-  const installation = await requireInstallation(request, env);
+  const user = await requireUser(request, env);
+  const userErr = guardUser(user);
+  if (userErr) return userErr;
   const body = (await readJson(request)) ?? {};
   const events = body.events ?? body;
 
@@ -608,24 +555,24 @@ async function handleEvents(request, env) {
     return error("No valid events provided", 422, { rejected });
   }
 
-  const result = await storeEvents(env, installation.installationId, valid);
+  const result = await storeEvents(env, user.userId, valid);
   return json({ ok: true, stored: result.stored, rejected: rejected.length });
 }
 
 async function handleForYouFeed(request, env) {
-  const installation = await installationContext(request, env);
-  const installationId = installation?.installationId ?? null;
+  const user = await userContext(request, env);
+  const userId = user?.userId ?? null;
 
   const url = new URL(request.url);
   const cursor = url.searchParams.get("cursor") || null;
   const coldStartCursor = parseVisualFeedCursor(cursor);
   const limit = Math.min(Math.max(parseInt(url.searchParams.get("limit") ?? "20", 10) || 20, 1), 50);
 
-  if (!installationId || !env?.DB?.prepare) {
+  if (!userId || !env?.SUPABASE_URL) {
     return json({ coldStart: true, items: [], nextCursor: null });
   }
 
-  const result = await generateRecommendedFeed(env, installationId, { cursor, limit });
+  const result = await generateRecommendedFeed(env, userId, { cursor, limit });
 
   if (result.coldStart) {
     const items = await listPublishedVisualFeed(env, { cursor: coldStartCursor, limit });
@@ -668,13 +615,15 @@ async function handleMediaAsset(env, mediaPath) {
 }
 
 async function handleAISummary(request, env) {
-  const installation = await requireInstallation(request, env);
+  const user = await requireUser(request, env);
+  const userErr = guardUser(user);
+  if (userErr) return userErr;
   const body = (await readJson(request)) ?? {};
   const storyId = body.storyId;
   if (!storyId) return error("storyId is required", 422);
 
   const cacheKey = `summary:${storyId}`;
-  const revenueCatAppUserId = revenueCatAppUserIdForInstallation(installation);
+  const revenueCatAppUserId = revenueCatAppUserIdForUser(user);
   const gate = await processAIRequest(env, revenueCatAppUserId, "summary", cacheKey);
   const gateError = aiBillingError(gate);
   if (gateError) return gateError;
@@ -760,9 +709,11 @@ async function handleAISummary(request, env) {
 }
 
 async function handleAITranslate(request, env) {
-  const installation = await requireInstallation(request, env);
+  const user = await requireUser(request, env);
+  const userErr = guardUser(user);
+  if (userErr) return userErr;
   const body = (await readJson(request)) ?? {};
-  const revenueCatAppUserId = revenueCatAppUserIdForInstallation(installation);
+  const revenueCatAppUserId = revenueCatAppUserIdForUser(user);
   const auth = await authorizeAIRequest(env, revenueCatAppUserId, "translation", { requireBalance: false });
   const authError = aiBillingError(auth);
   if (authError) return authError;
@@ -973,8 +924,10 @@ async function handleAIExplain(request, env) {
 }
 
 async function handleGetCredits(request, env) {
-  const installation = await requireInstallation(request, env);
-  const revenueCatAppUserId = revenueCatAppUserIdForInstallation(installation);
+  const user = await requireUser(request, env);
+  const userErr = guardUser(user);
+  if (userErr) return userErr;
+  const revenueCatAppUserId = revenueCatAppUserIdForUser(user);
   const subscriber = await getSubscriberInfo(env, revenueCatAppUserId);
   const balance = await getCreditBalance(env, revenueCatAppUserId);
   return json({
@@ -987,8 +940,6 @@ async function handleGetCredits(request, env) {
 
 const ROUTES = [
   { method: "GET",   path: "/health",               name: "health",           handler: (r, e) => json({ ok: true, service: e.APP_NAME ?? "NewsRoll Backend", environment: e.ENVIRONMENT ?? "unknown" }) },
-  { method: "POST",  path: "/v1/installations",      name: "installations",    handler: handleInstallations },
-  { method: "PATCH", path: "/v1/installations",      name: "update_install",   handler: handleUpdateInstallation },
   { method: "GET",   path: "/v1/config",             name: "config",           handler: handleConfig },
   { method: "GET",   path: "/v1/visual-feed",        name: "visual_feed",      handler: handleVisualFeed },
   { method: "POST",  path: "/v1/events",             name: "events",          handler: handleEvents },
@@ -1005,7 +956,7 @@ async function routeRequest(request, env) {
   const segments = url.pathname.split("/").filter(Boolean);
 
   if (request.method === "OPTIONS") {
-    return { response: new Response(null, { status: 204, headers: CORS_HEADERS }), route: "cors_preflight" };
+    return { response: new Response(null, { status: 204, headers: buildCorsHeaders(request) }), route: "cors_preflight" };
   }
 
   for (const route of ROUTES) {
@@ -1074,7 +1025,7 @@ export default {
         durationMs,
         ...(await responseLogFields(response))
       });
-      return withCors(response);
+      return withCors(response, request);
     } catch (thrown) {
       const durationMs = Date.now() - start;
       if (thrown instanceof Response) {
@@ -1087,7 +1038,7 @@ export default {
           durationMs,
           ...(await responseLogFields(thrown))
         });
-        return withCors(thrown);
+        return withCors(thrown, request);
       }
       log.error({
         event: "request_error",
@@ -1096,7 +1047,7 @@ export default {
         durationMs,
         ...log.fmtError(thrown),
       });
-      return withCors(error(thrown instanceof Error ? thrown.message : "Unexpected error", 500));
+      return withCors(error(thrown instanceof Error ? thrown.message : "Unexpected error", 500), request);
     }
   }
 };

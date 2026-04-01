@@ -1,5 +1,11 @@
 import * as log from "./log.mjs";
 import { AI_ACTIONS } from "./ai-actions.mjs";
+import * as shaped from "./shaped.mjs";
+import {
+  getRSSItemByStoryId,
+  getPublishedStoryForEnrichment,
+  updatePublishedFeedEntryEnrichment
+} from "./db.mjs";
 
 const TOPIC_KEYWORDS = {
   ai: /\b(ai|artificial intelligence|machine learning|llm|gpt|chatgpt|claude|neural net|deep learning|transformer|diffusion|openai|anthropic)\b/i,
@@ -31,6 +37,41 @@ const TOPIC_KEYWORDS = {
   csharp: /(?:\bc#(?=\W|$)|\bcsharp\b|(?:^|\W)\.net\b|\bdotnet\b)/i,
   ruby: /\b(ruby|rails)\b/i,
 };
+
+const KNOWN_COMPANIES = [
+  "Apple", "Google", "Microsoft", "Meta", "Amazon", "Tesla", "OpenAI", "Anthropic",
+  "Nvidia", "Intel", "AMD", "Qualcomm", "Samsung", "IBM", "Oracle", "Salesforce",
+  "Stripe", "Uber", "Airbnb", "Netflix", "Spotify", "SpaceX", "NASA",
+  "GitHub", "GitLab", "Cloudflare", "Docker", "Mozilla", "Reddit", "Y Combinator"
+];
+
+const KNOWN_PEOPLE = [
+  "Elon Musk", "Sam Altman", "Jensen Huang", "Sundar Pichai", "Satya Nadella",
+  "Tim Cook", "Mark Zuckerberg", "Jeff Bezos", "Linus Torvalds", "Andrew Ng",
+  "Dario Amodei", "Demis Hassabis"
+];
+
+export function extractEntities(title, extractedText) {
+  const combined = `${title ?? ""} ${(extractedText ?? "").slice(0, 1000)}`;
+  const entities = [];
+  const seen = new Set();
+
+  for (const name of KNOWN_COMPANIES) {
+    if (combined.includes(name) && !seen.has(name)) {
+      entities.push({ name, type: "company" });
+      seen.add(name);
+    }
+  }
+
+  for (const name of KNOWN_PEOPLE) {
+    if (combined.includes(name) && !seen.has(name)) {
+      entities.push({ name, type: "person" });
+      seen.add(name);
+    }
+  }
+
+  return entities;
+}
 
 export function extractTopicsKeyword(title, extractedText) {
   const combined = `${title ?? ""} ${(extractedText ?? "").slice(0, 500)}`;
@@ -145,39 +186,66 @@ export function computeNoveltyScore(publishedAt) {
 }
 
 export async function enrichPublishedStory(env, storyId) {
-  if (!env?.DB?.prepare) return;
+  if (!env?.SUPABASE_URL) return;
 
-  const row = await env.DB.prepare(
-    `SELECT p.story_id AS storyId, p.source_endpoint AS sourceEndpoint, p.published_at AS publishedAt,
-            c.extracted_text AS extractedText,
-            f.title, f.score, f.descendants
-     FROM published_feed_entries p
-     LEFT JOIN story_content c ON c.story_id = p.story_id
-     LEFT JOIN feed_entries f ON f.story_id = p.story_id
-     WHERE p.story_id = ?1
-     LIMIT 1`
-  ).bind(storyId).first();
+  const row = await getPublishedStoryForEnrichment(env, storyId);
 
   if (!row) {
     log.debug({ event: "enrich_skip", storyId, reason: "not_found" });
     return;
   }
 
-  const topics = extractTopicsKeyword(row.title ?? "", row.extractedText ?? "");
-  const qualityScore = computeQualityScore({
-    score: row.score,
-    descendants: row.descendants,
-    sourceEndpoint: row.sourceEndpoint
-  });
+  const topics = extractTopicsKeyword("", row.extractedText ?? "");
   const noveltyScore = computeNoveltyScore(row.publishedAt);
+  const entities = extractEntities("", row.extractedText ?? "");
+  const articleLength = (row.extractedText ?? "").length || null;
 
-  await env.DB.prepare(
-    `UPDATE published_feed_entries
-     SET topics = ?1, quality_score = ?2, novelty_score = ?3
-     WHERE story_id = ?4`
-  ).bind(JSON.stringify(topics), qualityScore, noveltyScore, storyId).run();
+  const rssItem = await getRSSItemByStoryId(env, storyId);
+  const publisher         = rssItem?.sourceName ?? null;
+  const publisherTier     = rssItem?.sourceTier ?? 2;
+  const sourceReliability = rssItem?.sourceReliability ?? null;
+  const hasAuthor         = Boolean(rssItem?.author);
+  const sourceCount       = rssItem?.sourceCount ?? 1;
+  const language          = rssItem?.sourceLanguage ?? "en";
 
-  log.info({ event: "enriched", storyId, topics, qualityScore, noveltyScore });
+  const qualityScore = sourceReliability != null
+    ? sourceReliability
+    : computeQualityScore({ sourceEndpoint: row.sourceEndpoint });
+
+  await updatePublishedFeedEntryEnrichment(env, storyId, {
+    topics,
+    qualityScore,
+    noveltyScore,
+    language,
+    entities,
+    articleLength,
+    hasAuthor,
+    publisher,
+    publisherTier,
+    sourceReliabilityScore: sourceReliability ?? 0.5
+  });
+
+  log.info({
+    event: "enriched", storyId, topics, qualityScore, noveltyScore,
+    entityCount: entities.length, publisher, publisherTier, sourceCount
+  });
+
+  // Fire-and-forget: sync to Shaped catalog (idempotent; cron velocity refresh will re-sync)
+  shaped.upsertItem(env, {
+    storyId,
+    publishedAt: row.publishedAt,
+    topics,
+    language,
+    entities,
+    qualityScore,
+    noveltyScore,
+    articleLength,
+    hasAuthor,
+    publisher,
+    publisherTier,
+    sourceReliabilityScore: sourceReliability ?? 0.5,
+    duplicateClusterSize: sourceCount
+  }).catch(() => {});
 
   if (env.MEDIA_QUEUE?.send && env.OPENAI_API_KEY) {
     try {

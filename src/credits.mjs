@@ -1,4 +1,4 @@
-import { getCachedAIResult } from "./d1.mjs";
+import { getCachedAIResult } from "./db.mjs";
 import { aiFeatureCosts } from "./ai-feature-config.mjs";
 import { getSubscriberInfo, getCreditBalance, spendCredits } from "./revenuecat.mjs";
 import * as log from "./log.mjs";

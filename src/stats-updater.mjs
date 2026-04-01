@@ -1,41 +1,34 @@
 import * as log from "./log.mjs";
+import { refreshItemVelocity } from "./shaped.mjs";
+import { updateStoryStats, getActiveStoryIds, cleanupOldUserEvents } from "./db.mjs";
 
-export async function updateStoryStats(env) {
-  if (!env?.DB?.prepare) return 0;
+export { updateStoryStats };
 
-  const result = await env.DB.prepare(
-    `UPDATE published_feed_entries
-     SET engagement_count = COALESCE((
-           SELECT COUNT(*) FROM user_events
-           WHERE user_events.story_id = published_feed_entries.story_id
-             AND user_events.event_type IN ('vote', 'save', 'share', 'complete')
-         ), 0),
-         impression_count = COALESCE((
-           SELECT COUNT(*) FROM user_events
-           WHERE user_events.story_id = published_feed_entries.story_id
-             AND user_events.event_type = 'impression'
-         ), 0)
-     WHERE story_id IN (
-       SELECT DISTINCT story_id FROM user_events
-       WHERE created_at > datetime('now', '-10 minutes')
-     )`
-  ).run();
+export async function updateVelocitySignals(env) {
+  if (!env?.SUPABASE_URL) return 0;
 
-  const updated = result.meta?.changes ?? 0;
+  const storyIds = await getActiveStoryIds(env, 120);
+  let updated = 0;
+
+  for (const storyId of storyIds) {
+    try {
+      const result = await refreshItemVelocity(env, storyId);
+      if (result) updated++;
+    } catch (err) {
+      log.warn({ event: "velocity_update_fail", storyId, ...log.fmtError(err) });
+    }
+  }
+
   if (updated > 0) {
-    log.info({ event: "story_stats_updated", count: updated });
+    log.info({ event: "velocity_signals_updated", count: updated });
   }
   return updated;
 }
 
 export async function cleanupOldEvents(env) {
-  if (!env?.DB?.prepare) return 0;
+  if (!env?.SUPABASE_URL) return 0;
 
-  const result = await env.DB.prepare(
-    "DELETE FROM user_events WHERE created_at < datetime('now', '-30 days')"
-  ).run();
-
-  const deleted = result.meta?.changes ?? 0;
+  const deleted = await cleanupOldUserEvents(env, 30);
   if (deleted > 0) {
     log.info({ event: "old_events_cleaned", count: deleted });
   }

@@ -6,7 +6,7 @@ import {
   getAdminUserByUsername,
   touchAdminSession,
   upsertAdminUser
-} from "./d1.mjs";
+} from "./db.mjs";
 
 const SESSION_COOKIE = "hr_admin_session";
 const SESSION_TTL_MS = 12 * 60 * 60 * 1000;

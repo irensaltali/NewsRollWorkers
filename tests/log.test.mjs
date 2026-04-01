@@ -3,38 +3,15 @@ import assert from "node:assert/strict";
 
 import * as log from "../src/log.mjs";
 import worker from "../src/index.mjs";
-import { signInstallation } from "../src/security.mjs";
+import { signTestJWT, TEST_JWT_SECRET, TEST_USER_ID } from "./test-auth.mjs";
 
 const env = {
   APP_NAME: "NewsRoll",
-  INSTALLATION_TOKEN_SECRET: "test-installation-secret",
-  SESSION_ENCRYPTION_SECRET: "test-session-secret",
+  SUPABASE_JWT_SECRET: TEST_JWT_SECRET,
   PUBLIC_BASE_URL: "https://newsroll.invalid",
   REVENUECAT_SECRET_KEY: "sk_test_fake",
   REVENUECAT_PROJECT_ID: "proj_test_fake"
 };
-
-function createDb() {
-  return {
-    prepare() {
-      return {
-        bind() {
-          return {
-            async first() {
-              return null;
-            },
-            async all() {
-              return { results: [] };
-            },
-            async run() {
-              return { meta: { changes: 1 } };
-            }
-          };
-        }
-      };
-    }
-  };
-}
 
 function withMockedFetch(mocks, fn) {
   const originalFetch = globalThis.fetch;
@@ -107,10 +84,7 @@ test("structured logs preserve an explicit message field", () => {
 
 test("failed request logs include error code and error message", async () => {
   const installId = "log-free-user";
-  const token = await signInstallation(
-    { installationId: installId, platform: "ios", issuedAt: Date.now() },
-    env.INSTALLATION_TOKEN_SECRET
-  );
+  const token = signTestJWT(installId, TEST_JWT_SECRET);
   const captured = [];
   const originalWarn = console.warn;
   console.warn = (line) => {
@@ -133,7 +107,7 @@ test("failed request logs include error code and error message", async () => {
           },
           body: JSON.stringify({ storyId: 12345, title: "Test", text: "Test content" })
         }),
-        { ...env, DB: createDb() }
+        { ...env }
       );
 
       assert.equal(response.status, 402);
@@ -148,7 +122,7 @@ test("failed request logs include error code and error message", async () => {
   assert.match(requestLog.detailsSnippet, /pro_required/);
 });
 
-test("thrown response logs include response error details", async () => {
+test("unauthenticated request logs include error details", async () => {
   const captured = [];
   const originalWarn = console.warn;
   console.warn = (line) => {
@@ -172,16 +146,13 @@ test("thrown response logs include response error details", async () => {
     console.warn = originalWarn;
   }
 
-  const requestLog = captured.find((entry) => entry.event === "request" && entry.route === "thrown_response");
-  assert.equal(requestLog.errorMessage, "Missing or invalid installation token");
+  const requestLog = captured.find((entry) => entry.event === "request" && entry.route === "ai_summary");
+  assert.equal(requestLog.errorMessage, "Missing or invalid token");
 });
 
 test("RevenueCat API request and response logs are emitted on success", async () => {
   const installId = "rc-log-success";
-  const token = await signInstallation(
-    { installationId: installId, platform: "ios", issuedAt: Date.now() },
-    env.INSTALLATION_TOKEN_SECRET
-  );
+  const token = signTestJWT(installId, TEST_JWT_SECRET);
   const captured = [];
   const originalInfo = console.log;
   console.log = (line) => {
@@ -203,7 +174,7 @@ test("RevenueCat API request and response logs are emitted on success", async ()
         new Request("https://example.com/v1/credits", {
           headers: { authorization: `Bearer ${token}` }
         }),
-        { ...env, DB: createDb() }
+        { ...env }
       );
 
       assert.equal(response.status, 200);
@@ -224,10 +195,7 @@ test("RevenueCat API request and response logs are emitted on success", async ()
 
 test("RevenueCat API response logs are emitted on failure", async () => {
   const installId = "rc-log-failure";
-  const token = await signInstallation(
-    { installationId: installId, platform: "ios", issuedAt: Date.now() },
-    env.INSTALLATION_TOKEN_SECRET
-  );
+  const token = signTestJWT(installId, TEST_JWT_SECRET);
   const infoLogs = [];
   const warnLogs = [];
   const originalInfo = console.log;
@@ -256,7 +224,7 @@ test("RevenueCat API response logs are emitted on failure", async () => {
           },
           body: JSON.stringify({ storyId: 12345, title: "Test", text: "Test content" })
         }),
-        { ...env, DB: createDb() }
+        { ...env }
       );
 
       assert.equal(response.status, 503);

@@ -1,4 +1,6 @@
 import * as log from "./log.mjs";
+import * as shaped from "./shaped.mjs";
+import { getUserProfile, getRecommendationCandidates, getSeenStoryIds } from "./db.mjs";
 
 export const SCORE_WEIGHTS = {
   topic: 0.35,
@@ -161,55 +163,24 @@ function injectFreshStory(items, allCandidates) {
   return items;
 }
 
-export async function generateRecommendedFeed(env, installationId, { cursor: cursorParam, limit = 20 } = {}) {
+export async function generateRecommendedFeed(env, userId, { cursor: cursorParam, limit = 20 } = {}) {
   const start = Date.now();
   const weights = getWeights(env);
 
-  const profile = installationId
-    ? await env.DB.prepare(
-        `SELECT topic_scores AS topicScores, endpoint_scores AS endpointScores,
-                total_impressions AS totalImpressions, total_engagements AS totalEngagements
-         FROM user_profiles WHERE installation_id = ?1`
-      ).bind(installationId).first()
-    : null;
+  const profile = userId ? await getUserProfile(env, userId) : null;
 
   if (!profile || (profile.totalImpressions ?? 0) < 10) {
-    log.info({ event: "cold_start_fallback", installationId });
+    log.info({ event: "cold_start_fallback", userId });
     return { coldStart: true };
   }
 
-  const candidates = await env.DB.prepare(
-    `SELECT p.story_id AS storyId, p.publish_sequence AS publishSequence,
-            p.source_endpoint AS sourceEndpoint, p.published_at AS publishedAt,
-            p.topics, p.quality_score AS qualityScore, p.novelty_score AS noveltyScore,
-            p.engagement_count AS engagementCount, p.impression_count AS impressionCount,
-            m.media_url AS mediaUrl, m.status AS mediaStatus,
-            c.ai_headline AS headline
-     FROM published_feed_entries p
-     JOIN story_media m ON m.story_id = p.story_id
-     LEFT JOIN story_content c ON c.story_id = p.story_id
-     WHERE m.status = 'ready'
-       AND m.media_url IS NOT NULL
-       AND p.topics IS NOT NULL
-       AND p.topics != '[]'
-     ORDER BY p.publish_sequence DESC
-     LIMIT 200`
-  ).all();
-
-  const allCandidates = candidates.results ?? [];
+  const allCandidates = await getRecommendationCandidates(env);
   if (allCandidates.length === 0) {
-    log.info({ event: "cold_start_fallback", installationId, reason: "no_candidates" });
+    log.info({ event: "cold_start_fallback", userId, reason: "no_candidates" });
     return { coldStart: true };
   }
 
-  const seenResult = await env.DB.prepare(
-    `SELECT DISTINCT story_id AS storyId FROM user_events
-     WHERE installation_id = ?1
-       AND event_type = 'impression'
-       AND created_at > datetime('now', '-7 days')`
-  ).bind(installationId).all();
-
-  const seenIds = new Set((seenResult.results ?? []).map((r) => r.storyId));
+  const seenIds = new Set(await getSeenStoryIds(env, userId));
 
   const cursorData = decodeCursor(cursorParam);
   const previouslySent = new Set(cursorData?.seen ?? []);
@@ -218,6 +189,43 @@ export async function generateRecommendedFeed(env, installationId, { cursor: cur
     (c) => !seenIds.has(c.storyId) && !previouslySent.has(c.storyId)
   );
 
+  const maxCursorIds = 60;
+
+  function buildResult(page, eventName) {
+    const allSentIds = [...previouslySent, ...page.map((i) => i.storyId)];
+    const nextCursorData = {
+      seen: allSentIds.slice(-maxCursorIds),
+      page: (cursorData?.page ?? 0) + 1
+    };
+    log.info({
+      event: eventName,
+      userId,
+      candidatePoolSize: allCandidates.length,
+      unseenCount: unseenCandidates.length,
+      pageSize: page.length,
+      scoringDurationMs: Date.now() - start
+    });
+    return {
+      coldStart: false,
+      items: page,
+      nextCursor: page.length > 0 ? encodeCursor(nextCursorData) : null
+    };
+  }
+
+  // Try Shaped ranking when configured
+  if (env.SHAPED_API_KEY) {
+    const candidateIds = unseenCandidates.map((c) => String(c.storyId));
+    const rankedIds = await shaped.rankItems(env, userId, candidateIds);
+    if (rankedIds.length > 0) {
+      const candidateMap = new Map(unseenCandidates.map((c) => [String(c.storyId), c]));
+      let shapedItems = rankedIds.map((id) => candidateMap.get(id)).filter(Boolean);
+      shapedItems = injectFreshStory(shapedItems, allCandidates);
+      return buildResult(shapedItems.slice(0, limit), "shaped_rank_served");
+    }
+    log.info({ event: "shaped_rank_fallback", userId, reason: "empty_response" });
+  }
+
+  // Local scoring fallback
   const scored = unseenCandidates.map((candidate) => ({
     ...candidate,
     score: scoreStory(candidate, profile, weights)
@@ -226,28 +234,5 @@ export async function generateRecommendedFeed(env, installationId, { cursor: cur
   let ranked = rerank(scored);
   ranked = injectFreshStory(ranked, allCandidates);
 
-  const page = ranked.slice(0, limit);
-
-  const allSentIds = [...previouslySent, ...page.map((i) => i.storyId)];
-  const maxCursorIds = 60;
-  const nextCursorData = {
-    seen: allSentIds.slice(-maxCursorIds),
-    page: (cursorData?.page ?? 0) + 1
-  };
-
-  const durationMs = Date.now() - start;
-  log.info({
-    event: "recommendation_served",
-    installationId,
-    candidatePoolSize: allCandidates.length,
-    unseenCount: unseenCandidates.length,
-    pageSize: page.length,
-    scoringDurationMs: durationMs
-  });
-
-  return {
-    coldStart: false,
-    items: page,
-    nextCursor: page.length > 0 ? encodeCursor(nextCursorData) : null
-  };
+  return buildResult(ranked.slice(0, limit), "recommendation_served");
 }

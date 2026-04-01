@@ -6,10 +6,12 @@
 	"compatibility_flags": [
 		"nodejs_compat_v2"
 	],
-	// Required secrets for Media deploys in both production and staging:
+	// Required secrets (wrangler secret put):
+	// - SUPABASE_SECRET_KEY
 	// - OPENAI_API_KEY
 	// - FAL_API_KEY
 	// - CLOUDFLARE_API_TOKEN
+	// - SHAPED_API_KEY
 	"migrations": [
 		{
 			"tag": "v1-global-visual-feed-coordinator",
@@ -26,7 +28,8 @@
 		"PUBLIC_API_BASE_URL": "https://api.newsroll.app",
 		"PUBLIC_MEDIA_BASE_URL": "https://media.newsroll.app",
 		"MEDIA_DAILY_LIMIT": "50",
-		"MEDIA_MIN_SCORE": "5"
+		"MEDIA_MIN_SCORE": "5",
+		"SUPABASE_URL": "https://snazihvdznshybaogwrx.supabase.co"
 	},
 	"durable_objects": {
 		"bindings": [
@@ -39,14 +42,7 @@
 	"kv_namespaces": [
 		{
 			"binding": "VISUAL_FEED_CACHE",
-			"id": "e1ffbfad58204e12b51d55b76d3ee186"
-		}
-	],
-	"d1_databases": [
-		{
-			"binding": "DB",
-			"database_name": "newsroll-staging",
-			"database_id": "b9500b46-f839-46c1-b445-7d473b496e33"
+			"id": "4cd0d14a54554f23a9afd0006b23c2c3"
 		}
 	],
 	"r2_buckets": [
@@ -83,10 +79,7 @@
 	"env": {
 		"staging": {
 			"name": "newsroll-media-staging",
-			// Required secrets for staging match production:
-			// - OPENAI_API_KEY -- Added as secret
-			// - FAL_API_KEY -- Added as secret
-			// - CLOUDFLARE_API_TOKEN
+			// Required secrets for staging match production
 			"vars": {
 				"APP_NAME": "NewsRoll Media",
 				"ENVIRONMENT": "staging",
@@ -95,7 +88,8 @@
 				"PUBLIC_API_BASE_URL": "https://api-staging.newsroll.app",
 				"PUBLIC_MEDIA_BASE_URL": "https://media-staging.newsroll.app",
 				"MEDIA_MIN_SCORE": "5",
-				"MEDIA_DAILY_LIMIT": "10"
+				"MEDIA_DAILY_LIMIT": "10",
+				"SUPABASE_URL": "https://snazihvdznshybaogwrx.supabase.co"
 			},
 			"durable_objects": {
 				"bindings": [
@@ -107,14 +101,8 @@
 			},
 			"kv_namespaces": [
 				{
-					"binding": "VISUAL_FEED_CACHE"
-				}
-			],
-			"d1_databases": [
-				{
-					"binding": "DB",
-					"database_name": "newsroll-staging",
-					"database_id": "b9500b46-f839-46c1-b445-7d473b496e33"
+					"binding": "VISUAL_FEED_CACHE",
+					"id": "4cd0d14a54554f23a9afd0006b23c2c3"
 				}
 			],
 			"r2_buckets": [

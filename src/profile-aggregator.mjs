@@ -1,4 +1,5 @@
 import * as log from "./log.mjs";
+import { createClient } from "@supabase/supabase-js";
 
 const EVENT_WEIGHTS = {
   vote: 3.0,
@@ -17,25 +18,14 @@ function decayFactor(daysAgo) {
   return Math.pow(0.5, daysAgo / DECAY_HALFLIFE_DAYS);
 }
 
-export async function aggregateProfile(env, installationId) {
-  if (!env?.DB?.prepare) return null;
+function getDB(env) {
+  return createClient(env.SUPABASE_URL, env.SUPABASE_SECRET_KEY, {
+    auth: { persistSession: false }
+  });
+}
 
-  const events = await env.DB.prepare(
-    `SELECT e.story_id AS storyId, e.event_type AS eventType, e.event_value AS eventValue, e.created_at AS createdAt,
-            p.topics, p.source_endpoint AS sourceEndpoint
-     FROM user_events e
-     LEFT JOIN published_feed_entries p ON p.story_id = e.story_id
-     WHERE e.installation_id = ?1
-       AND e.created_at > datetime('now', '-30 days')
-     ORDER BY e.created_at DESC
-     LIMIT 1000`
-  ).bind(installationId).all();
-
-  const rows = events.results ?? [];
-  if (rows.length === 0) {
-    log.debug({ event: "aggregate_skip", installationId, reason: "no_events" });
-    return null;
-  }
+export function computeProfileData(rows) {
+  if (!rows || rows.length === 0) return null;
 
   const topicScores = {};
   const endpointScores = {};
@@ -44,37 +34,35 @@ export async function aggregateProfile(env, installationId) {
   const now = Date.now();
 
   for (const row of rows) {
-    const weight = EVENT_WEIGHTS[row.eventType] ?? 0;
-    const daysAgo = (now - new Date(row.createdAt).getTime()) / (1000 * 60 * 60 * 24);
+    const eventType = row.event_type ?? row.eventType;
+    const createdAt = row.created_at ?? row.createdAt;
+    const sourceEndpoint = row.source_endpoint ?? row.sourceEndpoint;
+    const weight = EVENT_WEIGHTS[eventType] ?? 0;
+    const daysAgo = (now - new Date(createdAt).getTime()) / (1000 * 60 * 60 * 24);
     const decay = decayFactor(daysAgo);
     const effectiveWeight = weight * decay;
 
-    if (row.eventType === "dwell" && row.eventValue) {
-      try {
-        const val = JSON.parse(row.eventValue);
-        if (val.dwell_ms && val.dwell_ms < 3000) {
-          continue;
-        }
-      } catch {}
+    if (eventType === "dwell" && row.event_value) {
+      const val = typeof row.event_value === "string" ? JSON.parse(row.event_value) : row.event_value;
+      if (val?.dwell_ms && val.dwell_ms < 3000) continue;
     }
 
-    if (row.eventType === "impression") {
+    if (eventType === "impression") {
       totalImpressions++;
     } else if (weight > 0) {
       totalEngagements++;
     }
 
-    let topics = [];
-    try {
-      topics = JSON.parse(row.topics ?? "[]");
-    } catch {}
+    const topics = Array.isArray(row.topics)
+      ? row.topics
+      : (typeof row.topics === "string" ? JSON.parse(row.topics) : []);
 
     for (const topic of topics) {
       topicScores[topic] = (topicScores[topic] ?? 0) + effectiveWeight;
     }
 
-    if (row.sourceEndpoint) {
-      endpointScores[row.sourceEndpoint] = (endpointScores[row.sourceEndpoint] ?? 0) + effectiveWeight;
+    if (sourceEndpoint) {
+      endpointScores[sourceEndpoint] = (endpointScores[sourceEndpoint] ?? 0) + effectiveWeight;
     }
   }
 
@@ -88,64 +76,62 @@ export async function aggregateProfile(env, installationId) {
     endpointScores[key] = Math.round((endpointScores[key] / maxEndpoint) * 1000) / 1000;
   }
 
-  const profile = {
-    topicScores,
-    endpointScores,
-    totalImpressions,
-    totalEngagements
-  };
+  return { topicScores, endpointScores, totalImpressions, totalEngagements };
+}
 
-  await env.DB.prepare(
-    `INSERT INTO user_profiles (installation_id, topic_scores, endpoint_scores, media_pref, total_impressions, total_engagements, updated_at)
-     VALUES (?1, ?2, ?3, '{}', ?4, ?5, datetime('now'))
-     ON CONFLICT(installation_id) DO UPDATE SET
-       topic_scores = excluded.topic_scores,
-       endpoint_scores = excluded.endpoint_scores,
-       total_impressions = excluded.total_impressions,
-       total_engagements = excluded.total_engagements,
-       updated_at = excluded.updated_at`
-  ).bind(
-    installationId,
-    JSON.stringify(topicScores),
-    JSON.stringify(endpointScores),
-    totalImpressions,
-    totalEngagements
-  ).run();
+export async function aggregateProfile(env, userId) {
+  if (!env?.SUPABASE_URL) return null;
+
+  const { data } = await getDB(env).rpc("get_profile_events", {
+    p_user_id: userId,
+    p_days: 30
+  });
+
+  const rows = data ?? [];
+  if (rows.length === 0) {
+    log.debug({ event: "aggregate_skip", userId, reason: "no_events" });
+    return null;
+  }
+
+  const profile = computeProfileData(rows);
+  if (!profile) return null;
+
+  await getDB(env)
+    .from("user_profiles")
+    .upsert({
+      user_id: userId,
+      topic_scores: profile.topicScores,
+      endpoint_scores: profile.endpointScores,
+      media_pref: {},
+      total_impressions: profile.totalImpressions,
+      total_engagements: profile.totalEngagements,
+      updated_at: new Date().toISOString()
+    });
 
   log.info({
     event: "profile_aggregated",
-    installationId,
-    topicCount: Object.keys(topicScores).length,
-    totalImpressions,
-    totalEngagements
+    userId,
+    topicCount: Object.keys(profile.topicScores).length,
+    totalImpressions: profile.totalImpressions,
+    totalEngagements: profile.totalEngagements
   });
 
   return profile;
 }
 
 export async function aggregateStaleProfiles(env, limit = 100) {
-  if (!env?.DB?.prepare) return 0;
+  if (!env?.SUPABASE_URL) return 0;
 
-  const stale = await env.DB.prepare(
-    `SELECT DISTINCT e.installation_id AS installationId
-     FROM user_events e
-     LEFT JOIN user_profiles p ON p.installation_id = e.installation_id
-     WHERE p.installation_id IS NULL
-        OR p.updated_at < datetime('now', '-1 hour')
-     GROUP BY e.installation_id
-     HAVING COUNT(*) > 5
-     LIMIT ?1`
-  ).bind(limit).all();
-
-  const installationIds = (stale.results ?? []).map((r) => r.installationId);
+  const { data } = await getDB(env).rpc("get_stale_profile_users", { p_limit: limit });
+  const userIds = (data ?? []).map((r) => r.user_id);
   let aggregated = 0;
 
-  for (const installationId of installationIds) {
+  for (const userId of userIds) {
     try {
-      await aggregateProfile(env, installationId);
+      await aggregateProfile(env, userId);
       aggregated++;
     } catch (err) {
-      log.warn({ event: "aggregate_fail", installationId, ...log.fmtError(err) });
+      log.warn({ event: "aggregate_fail", userId, error: String(err) });
     }
   }
 
