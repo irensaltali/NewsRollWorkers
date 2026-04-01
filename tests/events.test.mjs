@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { validateEventBatch, VALID_EVENT_TYPES } from "../src/events.mjs";
+import { validateEventBatch, VALID_EVENT_TYPES, labelForEvent } from "../src/events.mjs";
 import worker from "../src/index.mjs";
 import { signTestJWT, TEST_JWT_SECRET, TEST_USER_ID } from "./test-auth.mjs";
 
@@ -58,6 +58,39 @@ test("validateEventBatch handles non-array input", () => {
   const { valid, rejected } = validateEventBatch("not an array");
   assert.equal(valid.length, 0);
   assert.equal(rejected.length, 1);
+});
+
+test("validateEventBatch normalizes richer payload fields", () => {
+  const { valid, rejected } = validateEventBatch([
+    {
+      eventId: "evt-123",
+      storyId: 42,
+      eventType: "external_open",
+      occurredAt: "2026-04-01T12:00:00.000Z",
+      sessionId: "session-abc",
+      surface: "story_detail",
+      position: 3,
+      feedMode: "forYou",
+      metadata: { browser: "inApp" }
+    }
+  ]);
+
+  assert.equal(rejected.length, 0);
+  assert.equal(valid.length, 1);
+  assert.equal(valid[0].eventId, "evt-123");
+  assert.equal(valid[0].sessionId, "session-abc");
+  assert.equal(valid[0].surface, "story_detail");
+  assert.equal(valid[0].position, 3);
+  assert.equal(valid[0].feedMode, "forYou");
+  assert.equal(valid[0].label, 1.25);
+});
+
+test("labelForEvent applies dwell and skip thresholds", () => {
+  assert.equal(labelForEvent("skip", 900), -1.0);
+  assert.equal(labelForEvent("skip", 2500), -0.5);
+  assert.equal(labelForEvent("dwell", 2000), 0.1);
+  assert.equal(labelForEvent("dwell", 6000), 0.3);
+  assert.equal(labelForEvent("dwell", 20000), 0.75);
 });
 
 test("events route returns 401 without auth", async () => {

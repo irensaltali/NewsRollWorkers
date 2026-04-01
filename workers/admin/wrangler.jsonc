@@ -7,7 +7,7 @@
 		"nodejs_compat_v2"
 	],
 	// Required secrets (wrangler secret put):
-	// - SUPABASE_SECRET_KEY
+	// - SUPABASE_SERVICE_ROLE_KEY
 	// - ADMIN_USERNAME
 	// - ADMIN_PASSWORD
 	// - OPENAI_API_KEY

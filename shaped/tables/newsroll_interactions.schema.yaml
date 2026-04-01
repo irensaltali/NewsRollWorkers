@@ -1,0 +1,21 @@
+name: newsroll_interactions
+schema_type: CUSTOM
+unique_keys:
+  - event_id
+datetime_key: created_at
+column_schema:
+  event_id: String
+  user_id: String
+  item_id: String
+  created_at: DateTime
+  event_type: String
+  label: Float
+  session_id: String
+  surface: String
+  position: Int32
+  feed_mode: String
+  dwell_ms: Int32
+  media_type: String
+  source_endpoint: String
+  topic_primary: String
+  ai_action: String

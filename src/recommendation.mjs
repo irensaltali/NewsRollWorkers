@@ -1,6 +1,7 @@
 import * as log from "./log.mjs";
 import * as shaped from "./shaped.mjs";
 import { getUserProfile, getRecommendationCandidates, getSeenStoryIds } from "./db.mjs";
+import { FOR_YOU_MIN_EVENTS_DEFAULT } from "./config.mjs";
 
 export const SCORE_WEIGHTS = {
   topic: 0.35,
@@ -166,13 +167,13 @@ function injectFreshStory(items, allCandidates) {
 export async function generateRecommendedFeed(env, userId, { cursor: cursorParam, limit = 20 } = {}) {
   const start = Date.now();
   const weights = getWeights(env);
+  const minQualifiedInteractions = Math.max(
+    Number.parseInt(env?.FOR_YOU_MIN_EVENTS ?? `${FOR_YOU_MIN_EVENTS_DEFAULT}`, 10) || FOR_YOU_MIN_EVENTS_DEFAULT,
+    1
+  );
 
   const profile = userId ? await getUserProfile(env, userId) : null;
-
-  if (!profile || (profile.totalImpressions ?? 0) < 10) {
-    log.info({ event: "cold_start_fallback", userId });
-    return { coldStart: true };
-  }
+  const qualifiedInteractions = profile?.totalEngagements ?? 0;
 
   const allCandidates = await getRecommendationCandidates(env);
   if (allCandidates.length === 0) {
@@ -212,8 +213,8 @@ export async function generateRecommendedFeed(env, userId, { cursor: cursorParam
     };
   }
 
-  // Try Shaped ranking when configured
-  if (env.SHAPED_API_KEY) {
+  // Try Shaped ranking when configured and the user has enough qualified signals.
+  if (env.SHAPED_API_KEY && qualifiedInteractions >= minQualifiedInteractions) {
     const candidateIds = unseenCandidates.map((c) => String(c.storyId));
     const rankedIds = await shaped.rankItems(env, userId, candidateIds);
     if (rankedIds.length > 0) {
@@ -228,11 +229,14 @@ export async function generateRecommendedFeed(env, userId, { cursor: cursorParam
   // Local scoring fallback
   const scored = unseenCandidates.map((candidate) => ({
     ...candidate,
-    score: scoreStory(candidate, profile, weights)
+    score: scoreStory(candidate, profile ?? { topicScores: {}, endpointScores: {} }, weights)
   }));
 
   let ranked = rerank(scored);
   ranked = injectFreshStory(ranked, allCandidates);
 
-  return buildResult(ranked.slice(0, limit), "recommendation_served");
+  return buildResult(
+    ranked.slice(0, limit),
+    qualifiedInteractions >= minQualifiedInteractions ? "recommendation_served" : "recommendation_served_local_fallback"
+  );
 }

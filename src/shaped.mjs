@@ -5,11 +5,10 @@ import {
   getPublishedEntryForVelocitySync
 } from "./db.mjs";
 
-// ⚠️ VERIFY all endpoint paths, header names, and response shapes from
-//    https://docs.shaped.ai before deploying with a real API key.
-const SHAPED_BASE_URL   = "https://api.shaped.ai"; // VERIFY
-const SHAPED_MODEL_ID   = "newsroll_stories";       // configure in Shaped dashboard
-const SHAPED_DATASET_ID = "newsroll_articles";      // configure in Shaped dashboard
+const SHAPED_BASE_URL = "https://api.shaped.ai";
+const DEFAULT_ENGINE_NAME = "newsroll_visual_v1";
+const DEFAULT_ITEMS_TABLE = "newsroll_items";
+const DEFAULT_INTERACTIONS_TABLE = "newsroll_interactions";
 
 function isEnabled(env) {
   return typeof env?.SHAPED_API_KEY === "string" && env.SHAPED_API_KEY.length > 0;
@@ -17,9 +16,42 @@ function isEnabled(env) {
 
 function shapedHeaders(env) {
   return {
-    "Content-Type": "application/json",
-    "x-api-key": env.SHAPED_API_KEY // VERIFY header name from Shaped docs
+    "x-api-key": env.SHAPED_API_KEY
   };
+}
+
+function engineName(env) {
+  return env?.SHAPED_ENGINE_NAME ?? DEFAULT_ENGINE_NAME;
+}
+
+function itemsTable(env) {
+  return env?.SHAPED_ITEMS_TABLE ?? DEFAULT_ITEMS_TABLE;
+}
+
+function interactionsTable(env) {
+  return env?.SHAPED_INTERACTIONS_TABLE ?? DEFAULT_INTERACTIONS_TABLE;
+}
+
+function scoreExpression(env) {
+  return env?.SHAPED_SCORE_EXPRESSION ?? "click_through_rate";
+}
+
+function escapeShapedString(value) {
+  return String(value).replace(/'/g, "''");
+}
+
+function buildRankQuery(env, limit) {
+  const valueModel = escapeShapedString(scoreExpression(env));
+  return [
+    "SELECT *",
+    "FROM ids($candidate_item_ids)",
+    `ORDER BY score(expression='${valueModel}', input_user_id='$user_id')`,
+    `LIMIT ${Math.max(1, limit)}`
+  ].join("\n");
+}
+
+function toNdjson(rows) {
+  return rows.map((row) => JSON.stringify(row)).join("\n");
 }
 
 /**
@@ -30,36 +62,52 @@ export async function upsertItem(env, item) {
   if (!isEnabled(env)) return { ok: true };
   try {
     const shapedItem = {
-      id:                       String(item.storyId),
-      published_at:             item.publishedAt ?? null,
-      topics:                   item.topics ?? [],
-      publisher:                item.publisher ?? null,
-      language:                 item.language ?? "en",
-      entities:                 item.entities ?? [],
-      quality_score:            item.qualityScore ?? 0.5,
-      novelty_score:            item.noveltyScore ?? 0.5,
-      publisher_tier:           item.publisherTier ?? 2,
+      item_id: String(item.storyId),
+      created_at: item.publishedAt ?? new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+      headline: item.headline ?? null,
+      publisher: item.publisher ?? null,
+      source_endpoint: item.sourceEndpoint ?? null,
+      topics_text: Array.isArray(item.topics) ? item.topics.join(" ") : item.topics ?? null,
+      entities_text: Array.isArray(item.entities)
+        ? item.entities.map((entity) => entity?.name ?? entity).filter(Boolean).join(" ")
+        : item.entities ?? null,
+      language: item.language ?? "en",
+      quality_score: item.qualityScore ?? 0.5,
+      novelty_score: item.noveltyScore ?? 0.5,
+      publisher_tier: item.publisherTier ?? 2,
       source_reliability_score: item.sourceReliabilityScore ?? 0.5,
-      has_author:               Boolean(item.hasAuthor),
-      article_length:           item.articleLength ?? null,
-      ctr_5m:                   item.ctr5m ?? 0.0,
-      ctr_30m:                  item.ctr30m ?? 0.0,
-      ctr_2h:                   item.ctr2h ?? 0.0,
-      save_rate_2h:             item.saveRate2h ?? 0.0,
-      skip_rate_30m:            item.skipRate30m ?? 0.0,
-      completion_rate_2h:       item.completionRate2h ?? 0.0,
-      engagement_count:         item.engagementCount ?? 0,
-      impression_count:         item.impressionCount ?? 0,
-      duplicate_cluster_size:   item.duplicateClusterSize ?? 1
-      // TODO: title_embedding, body_embedding (future)
+      media_type: item.mediaType ?? null,
+      media_provider: item.mediaProvider ?? null,
+      media_model: item.mediaModel ?? null,
+      generation_status: item.generationStatus ?? null,
+      prompt_template_id: item.promptTemplateId ?? null,
+      prompt_template_name: item.promptTemplateName ?? null,
+      article_length: item.articleLength ?? null,
+      has_author: Boolean(item.hasAuthor),
+      topic_count: item.topicCount ?? (Array.isArray(item.topics) ? item.topics.length : null),
+      entity_count: item.entityCount ?? (Array.isArray(item.entities) ? item.entities.length : null),
+      duplicate_cluster_size: item.duplicateClusterSize ?? 1,
+      ctr_5m: item.ctr5m ?? 0.0,
+      ctr_30m: item.ctr30m ?? 0.0,
+      ctr_2h: item.ctr2h ?? 0.0,
+      save_rate_2h: item.saveRate2h ?? 0.0,
+      skip_rate_30m: item.skipRate30m ?? 0.0,
+      completion_rate_2h: item.completionRate2h ?? 0.0,
+      detail_open_rate_2h: item.detailOpenRate2h ?? 0.0,
+      share_rate_2h: item.shareRate2h ?? 0.0,
+      hide_rate_2h: item.hideRate2h ?? 0.0,
+      ai_action_rate_24h: item.aiActionRate24h ?? 0.0
     };
 
-    // VERIFY endpoint from Shaped docs — likely POST /v1/datasets/{id}/items
-    const url = `${SHAPED_BASE_URL}/v1/datasets/${SHAPED_DATASET_ID}/items`;
+    const url = `${SHAPED_BASE_URL}/v2/tables/${itemsTable(env)}/table_insert`;
     const resp = await fetch(url, {
       method: "POST",
-      headers: shapedHeaders(env),
-      body: JSON.stringify({ items: [shapedItem] })
+      headers: {
+        ...shapedHeaders(env),
+        "Content-Type": "application/x-ndjson"
+      },
+      body: toNdjson([shapedItem])
     });
 
     if (!resp.ok) {
@@ -75,18 +123,6 @@ export async function upsertItem(env, item) {
   }
 }
 
-// VERIFY all mapped values against Shaped's supported interaction types
-const EVENT_TYPE_MAP = {
-  impression: "VIEW",
-  dwell:      "VIEW",
-  complete:   "COMPLETE",
-  vote:       "LIKE",
-  save:       "SAVE",
-  share:      "SHARE",
-  skip:       "SKIP",
-  hide:       "DISLIKE"
-};
-
 /**
  * Forward a batch of user interaction events to Shaped.
  * Fire-and-forget safe — never throws to caller.
@@ -94,31 +130,35 @@ const EVENT_TYPE_MAP = {
 export async function trackEvents(env, userId, events) {
   if (!isEnabled(env) || !events?.length) return { ok: true };
   try {
-    const now = new Date().toISOString();
     const interactions = events
-      .filter((e) => EVENT_TYPE_MAP[e.eventType])
-      .map((e) => {
-        const interaction = {
-          user_id:    userId,
-          item_id:    String(e.storyId),
-          event_type: EVENT_TYPE_MAP[e.eventType],
-          timestamp:  now
-        };
-        if (e.eventType === "dwell" && e.eventValue) {
-          const val = typeof e.eventValue === "string" ? JSON.parse(e.eventValue) : e.eventValue;
-          if (val?.dwell_ms != null) interaction.properties = { dwell_ms: val.dwell_ms };
-        }
-        return interaction;
-      });
+      .map((e) => ({
+        event_id: e.eventId ?? crypto.randomUUID(),
+        user_id: userId,
+        item_id: String(e.storyId),
+        created_at: e.occurredAt ?? new Date().toISOString(),
+        event_type: e.eventType,
+        label: e.label ?? null,
+        session_id: e.sessionId ?? null,
+        surface: e.surface ?? "unknown",
+        position: e.position ?? null,
+        feed_mode: e.feedMode ?? null,
+        dwell_ms: e.dwellMs ?? null,
+        media_type: e.mediaType ?? null,
+        source_endpoint: e.sourceEndpoint ?? null,
+        topic_primary: e.topicPrimary ?? null,
+        ai_action: e.aiAction ?? null
+      }));
 
     if (interactions.length === 0) return { ok: true };
 
-    // VERIFY endpoint from Shaped docs — likely POST /v1/models/{id}/events
-    const url = `${SHAPED_BASE_URL}/v1/models/${SHAPED_MODEL_ID}/events`;
+    const url = `${SHAPED_BASE_URL}/v2/tables/${interactionsTable(env)}/table_insert`;
     const resp = await fetch(url, {
       method: "POST",
-      headers: shapedHeaders(env),
-      body: JSON.stringify({ events: interactions })
+      headers: {
+        ...shapedHeaders(env),
+        "Content-Type": "application/x-ndjson"
+      },
+      body: toNdjson(interactions)
     });
 
     if (!resp.ok) {
@@ -142,15 +182,20 @@ export async function trackEvents(env, userId, events) {
 export async function rankItems(env, userId, candidateIds, { timeoutMs = 800 } = {}) {
   if (!isEnabled(env) || !candidateIds?.length) return [];
   try {
-    // VERIFY endpoint and request/response shape from Shaped docs
-    const url = `${SHAPED_BASE_URL}/v1/models/${SHAPED_MODEL_ID}/rank`;
+    const url = `${SHAPED_BASE_URL}/v2/engines/${engineName(env)}/query`;
+    const requestedLimit = Math.max(1, candidateIds.length);
     const resp = await fetch(url, {
       method: "POST",
-      headers: shapedHeaders(env),
+      headers: {
+        ...shapedHeaders(env),
+        "Content-Type": "application/json"
+      },
       body: JSON.stringify({
-        user_id:  userId,
-        item_ids: candidateIds,
-        limit:    candidateIds.length
+        query: buildRankQuery(env, requestedLimit),
+        parameters: {
+          user_id: userId,
+          candidate_item_ids: candidateIds
+        }
       }),
       signal: AbortSignal.timeout(timeoutMs)
     });
@@ -162,9 +207,14 @@ export async function rankItems(env, userId, candidateIds, { timeoutMs = 800 } =
     }
 
     const data = await resp.json();
-    // VERIFY response field name from Shaped docs
-    const ranked = data?.ranked_item_ids ?? data?.item_ids ?? data?.items ?? [];
-    return Array.isArray(ranked) ? ranked.map(String) : [];
+    const ranked = data?.results ?? data?.items ?? [];
+    if (!Array.isArray(ranked)) {
+      return [];
+    }
+    return ranked
+      .map((item) => item?.item_id ?? item?.id ?? item)
+      .filter(Boolean)
+      .map(String);
   } catch (err) {
     log.warn({ event: "shaped_rank_error", ...log.fmtError(err) });
     return [];
@@ -179,10 +229,11 @@ export async function rankItems(env, userId, candidateIds, { timeoutMs = 800 } =
 export async function refreshItemVelocity(env, storyId) {
   if (!env?.SUPABASE_URL) return null;
   try {
-    const [w5m, w30m, w2h] = await Promise.all([
+    const [w5m, w30m, w2h, w24h] = await Promise.all([
       getStoryVelocityWindow(env, storyId, 5),
       getStoryVelocityWindow(env, storyId, 30),
-      getStoryVelocityWindow(env, storyId, 120)
+      getStoryVelocityWindow(env, storyId, 120),
+      getStoryVelocityWindow(env, storyId, 1440)
     ]);
 
     const ctr5m            = _ctr(w5m);
@@ -191,8 +242,23 @@ export async function refreshItemVelocity(env, storyId) {
     const saveRate2h       = _rate(w2h.saves,     w2h.imp);
     const skipRate30m      = _rate(w30m.skips,    w30m.imp);
     const completionRate2h = _rate(w2h.completes, w2h.imp);
+    const detailOpenRate2h = _rate(w2h.detailOpens, w2h.imp);
+    const shareRate2h      = _rate(w2h.shares, w2h.imp);
+    const hideRate2h       = _rate(w2h.hides, w2h.imp);
+    const aiActionRate24h  = _rate(w24h.aiActions, w24h.imp);
 
-    const signals = { ctr5m, ctr30m, ctr2h, saveRate2h, skipRate30m, completionRate2h };
+    const signals = {
+      ctr5m,
+      ctr30m,
+      ctr2h,
+      saveRate2h,
+      skipRate30m,
+      completionRate2h,
+      detailOpenRate2h,
+      shareRate2h,
+      hideRate2h,
+      aiActionRate24h
+    };
 
     await updatePublishedFeedEntryVelocity(env, storyId, signals);
 

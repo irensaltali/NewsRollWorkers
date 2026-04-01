@@ -34,7 +34,10 @@ async function insertPublishedEntry(env, nextSequence, payload) {
     storyId: payload.storyId,
     publishSequence,
     sourceEndpoint: payload.sourceEndpoint,
-    publishedAt
+    publishedAt,
+    mediaUrl: payload.mediaUrl,
+    mediaStatus: payload.mediaStatus,
+    headline: payload.headline ?? null
   });
 
   if (!inserted) {

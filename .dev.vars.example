@@ -1,5 +1,5 @@
 SUPABASE_URL=https://snazihvdznshybaogwrx.supabase.co
-SUPABASE_SECRET_KEY=replace-me
+SUPABASE_SERVICE_ROLE_KEY=replace-me
 SUPABASE_JWT_SECRET=replace-me
 FAL_API_KEY=replace-me
 PUBLIC_BASE_URL=https://example.com
@@ -8,6 +8,10 @@ CLOUDFLARE_ACCOUNT_ID=replace-me
 CLOUDFLARE_API_TOKEN=replace-me
 REVENUECAT_SECRET_KEY=replace-me
 REVENUECAT_PROJECT_ID=proj503ccfa0
+SHAPED_API_KEY=replace-me
+SHAPED_ENGINE_NAME=newsroll_visual_v1
+SHAPED_ITEMS_TABLE=newsroll_items
+SHAPED_INTERACTIONS_TABLE=newsroll_interactions
 ADMIN_USERNAME=admin
 ADMIN_PASSWORD=replace-me
 ENVIRONMENT=development

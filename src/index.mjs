@@ -17,7 +17,8 @@ import {
   buildVisualFeedResponse,
   parseVisualFeedCursor,
   parseVisualFeedLimit,
-  readVisualFeedSnapshot
+  readVisualFeedSnapshot,
+  toVisualFeedItem
 } from "./visual-feed.mjs";
 import { validateEventBatch, storeEvents } from "./events.mjs";
 import { generateRecommendedFeed } from "./recommendation.mjs";
@@ -512,8 +513,29 @@ async function handleConfig(_request, env) {
 
 async function handleVisualFeed(request, env) {
   const url = new URL(request.url);
-  const cursor = parseVisualFeedCursor(url.searchParams.get("cursor"));
+  const cursorValue = url.searchParams.get("cursor");
+  const cursor = parseVisualFeedCursor(cursorValue);
   const limit = parseVisualFeedLimit(env, url.searchParams.get("limit"));
+  const user = await userContext(request, env);
+
+  if (user?.userId && env?.SUPABASE_URL) {
+    const result = await generateRecommendedFeed(env, user.userId, {
+      cursor: cursorValue,
+      limit
+    });
+
+    if (!result.coldStart) {
+      return json({
+        cursor: cursorValue ?? null,
+        nextCursor: result.nextCursor ?? null,
+        items: (result.items ?? []).map((item) => toVisualFeedItem(env, item))
+      }, {
+        headers: {
+          "cache-control": "private, max-age=0, no-store"
+        }
+      });
+    }
+  }
 
   if (cursor == null) {
     const snapshot = await readVisualFeedSnapshot(env);
@@ -586,7 +608,7 @@ async function handleForYouFeed(request, env) {
 
   return json({
     coldStart: false,
-    items: result.items ?? [],
+    items: (result.items ?? []).map((item) => toVisualFeedItem(env, item)),
     nextCursor: result.nextCursor ?? null
   });
 }

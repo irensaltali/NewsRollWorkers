@@ -1,0 +1,34 @@
+version: v2
+name: newsroll_visual_v1
+data:
+  item_table:
+    name: newsroll_items
+    type: table
+  interaction_table:
+    name: newsroll_interactions
+    type: table
+index:
+  lexical_search:
+    item_fields:
+      - headline
+      - publisher
+      - source_endpoint
+      - topics_text
+      - entities_text
+  embeddings:
+    - name: content_embedding
+      encoder:
+        type: hugging_face
+        model_name: sentence-transformers/all-MiniLM-L6-v2
+        batch_size: 256
+        item_fields:
+          - headline
+          - publisher
+          - source_endpoint
+          - topics_text
+          - entities_text
+training:
+  models:
+    - name: two_tower
+      policy_type: two_tower
+      strategy: early_stopping

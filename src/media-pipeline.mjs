@@ -3,6 +3,7 @@ import {
   storeHeadline,
   createPromptRunEvent,
   upsertMedia,
+  updatePublishedFeedEntryMediaProjection,
   getRandomActivePromptTemplate,
   reserveMediaQueueSlot,
   releaseMediaQueueSlot
@@ -19,6 +20,7 @@ import { publishReadyStoryViaCoordinator } from "./global-visual-feed-coordinato
 import { enrichPublishedStory } from "./enrichment.mjs";
 import { ingestCategory } from "./rss-ingest.mjs";
 import * as log from "./log.mjs";
+import * as shaped from "./shaped.mjs";
 import { readableUrlFor } from "./visual-feed.mjs";
 import { buildFalImageRequest, generateImageWithProvider } from "./media-generation.mjs";
 import { buildPromptInput, clipPromptText, mediaTemplateWithFallback } from "./prompt-config.mjs";
@@ -203,7 +205,11 @@ export async function processMediaMessage(batch, env) {
         attempts: attempt + 1,
         updatedAt: now,
         promptTemplateId: template?.id ?? null,
-        imagePrompt
+        imagePrompt,
+        mediaType: "image",
+        provider: result.provider ?? template.provider ?? "fal",
+        model: result.model ?? template.model ?? null,
+        generationLatencyMs: generationDurationMs
       });
 
       await createPromptRunEvent(env, {
@@ -221,6 +227,17 @@ export async function processMediaMessage(batch, env) {
         artifactUrl: result.url ?? null,
         errorText: result.errorText ?? null,
         storyId: body.storyId
+      });
+
+      await updatePublishedFeedEntryMediaProjection(env, body.storyId, {
+        mediaType: "image",
+        mediaProvider: result.provider ?? template.provider ?? "fal",
+        mediaModel: result.model ?? template.model ?? null,
+        generationStatus: result.status,
+        generationLatencyMs: generationDurationMs,
+        generationCostUsd: null,
+        promptTemplateId: template?.id ?? null,
+        promptTemplateName: template?.name ?? null
       });
 
       const readyForPublication =
@@ -246,6 +263,19 @@ export async function processMediaMessage(batch, env) {
         });
 
         if (publication.published) {
+          shaped.upsertItem(env, {
+            storyId: body.storyId,
+            headline,
+            sourceEndpoint: body.endpoint,
+            publishedAt: now,
+            mediaType: "image",
+            mediaProvider: result.provider ?? template.provider ?? "fal",
+            mediaModel: result.model ?? template.model ?? null,
+            generationStatus: result.status,
+            generationLatencyMs: generationDurationMs,
+            promptTemplateId: template?.id ?? null,
+            promptTemplateName: template?.name ?? null
+          }).catch(() => {});
           try {
             await enrichPublishedStory(env, body.storyId);
           } catch (enrichErr) {

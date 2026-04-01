@@ -662,7 +662,7 @@ test("admin worker runs an image test and includes the run in stats", async () =
     assert.equal(imageTest.status, 200);
     const imagePayload = await imageTest.json();
     assert.equal(imagePayload.assetUrl, "https://cdn.example.com/generated.png");
-    assert.equal(imagePayload.costDisplay, "~$0.0420");
+    assert.equal(imagePayload.costDisplay, "~$0.0735");
     assert.equal(imagePayload.costEstimated, true);
 
     const overview = await adminWorker.fetch(

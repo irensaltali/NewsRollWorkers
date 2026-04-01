@@ -7,7 +7,7 @@
 		"nodejs_compat_v2"
 	],
 	// Required secrets (wrangler secret put):
-	// - SUPABASE_SECRET_KEY
+	// - SUPABASE_SERVICE_ROLE_KEY
 	// - SUPABASE_JWT_SECRET
 	// - OPENAI_API_KEY
 	// - REVENUECAT_SECRET_KEY
@@ -21,6 +21,9 @@
 		"PUBLIC_MEDIA_BASE_URL": "https://media.newsroll.app",
 		"REVENUECAT_APP_ID": "app8fd0f68a2b",
 		"REVENUECAT_PROJECT_ID": "proj503ccfa0",
+		"SHAPED_ENGINE_NAME": "newsroll_visual_v1",
+		"SHAPED_ITEMS_TABLE": "newsroll_items",
+		"SHAPED_INTERACTIONS_TABLE": "newsroll_interactions",
 		"SUPABASE_URL": "https://snazihvdznshybaogwrx.supabase.co"
 	},
 	"routes": [
@@ -62,6 +65,9 @@
 				"PUBLIC_MEDIA_BASE_URL": "https://media-staging.newsroll.app",
 				"REVENUECAT_APP_ID": "app8fd0f68a2b",
 				"REVENUECAT_PROJECT_ID": "proj503ccfa0",
+				"SHAPED_ENGINE_NAME": "newsroll_visual_v1",
+				"SHAPED_ITEMS_TABLE": "newsroll_items",
+				"SHAPED_INTERACTIONS_TABLE": "newsroll_interactions",
 				"SUPABASE_URL": "https://snazihvdznshybaogwrx.supabase.co"
 			},
 			"routes": [

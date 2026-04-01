@@ -2,14 +2,20 @@ import * as log from "./log.mjs";
 import { createClient } from "@supabase/supabase-js";
 
 const EVENT_WEIGHTS = {
+  ai_summary_request: 0.6,
+  ai_explain_request: 0.8,
+  ai_translate_request: 0.5,
+  ai_thread_intelligence_request: 0.7,
+  external_open: 1.25,
+  detail_open: 1.0,
   vote: 3.0,
   save: 2.0,
   share: 2.0,
-  complete: 1.5,
-  dwell: 1.0,
-  impression: 0.1,
-  skip: -0.2,
-  hide: -1.0
+  complete: 1.0,
+  dwell: 0.3,
+  impression: 0.05,
+  skip: -1.0,
+  hide: -2.0
 };
 
 const DECAY_HALFLIFE_DAYS = 7;
@@ -19,7 +25,7 @@ function decayFactor(daysAgo) {
 }
 
 function getDB(env) {
-  return createClient(env.SUPABASE_URL, env.SUPABASE_SECRET_KEY, {
+  return createClient(env.SUPABASE_URL, env.SUPABASE_SERVICE_ROLE_KEY, {
     auth: { persistSession: false }
   });
 }
@@ -37,15 +43,10 @@ export function computeProfileData(rows) {
     const eventType = row.event_type ?? row.eventType;
     const createdAt = row.created_at ?? row.createdAt;
     const sourceEndpoint = row.source_endpoint ?? row.sourceEndpoint;
-    const weight = EVENT_WEIGHTS[eventType] ?? 0;
+    const weight = Number(row.label ?? row.eventLabel ?? EVENT_WEIGHTS[eventType] ?? 0);
     const daysAgo = (now - new Date(createdAt).getTime()) / (1000 * 60 * 60 * 24);
     const decay = decayFactor(daysAgo);
     const effectiveWeight = weight * decay;
-
-    if (eventType === "dwell" && row.event_value) {
-      const val = typeof row.event_value === "string" ? JSON.parse(row.event_value) : row.event_value;
-      if (val?.dwell_ms && val.dwell_ms < 3000) continue;
-    }
 
     if (eventType === "impression") {
       totalImpressions++;
@@ -55,7 +56,7 @@ export function computeProfileData(rows) {
 
     const topics = Array.isArray(row.topics)
       ? row.topics
-      : (typeof row.topics === "string" ? JSON.parse(row.topics) : []);
+      : (typeof row.topics === "string" ? JSON.parse(row.topics) : (row.topic_primary ? [row.topic_primary] : []));
 
     for (const topic of topics) {
       topicScores[topic] = (topicScores[topic] ?? 0) + effectiveWeight;
@@ -82,12 +83,41 @@ export function computeProfileData(rows) {
 export async function aggregateProfile(env, userId) {
   if (!env?.SUPABASE_URL) return null;
 
-  const { data } = await getDB(env).rpc("get_profile_events", {
-    p_user_id: userId,
-    p_days: 30
-  });
+  let rows = [];
+  try {
+    const { data } = await getDB(env).rpc("get_profile_events", {
+      p_user_id: userId,
+      p_days: 30
+    });
+    rows = data ?? [];
+  } catch {
+    const since = new Date(Date.now() - 30 * 86400000).toISOString();
+    const { data: events } = await getDB(env)
+      .from("user_events")
+      .select("story_id, event_type, label, source_endpoint, topic_primary, occurred_at, created_at")
+      .eq("user_id", userId)
+      .gte("occurred_at", since);
 
-  const rows = data ?? [];
+    const storyIds = [...new Set((events ?? []).map((event) => event.story_id).filter(Boolean))];
+    let topicsByStoryId = new Map();
+    if (storyIds.length > 0) {
+      const { data: stories } = await getDB(env)
+        .from("published_feed_entries")
+        .select("story_id, topics, source_endpoint")
+        .in("story_id", storyIds);
+      topicsByStoryId = new Map((stories ?? []).map((story) => [story.story_id, story]));
+    }
+
+    rows = (events ?? []).map((event) => {
+      const story = topicsByStoryId.get(event.story_id);
+      return {
+        ...event,
+        topics: story?.topics ?? null,
+        source_endpoint: event.source_endpoint ?? story?.source_endpoint ?? null
+      };
+    });
+  }
+
   if (rows.length === 0) {
     log.debug({ event: "aggregate_skip", userId, reason: "no_events" });
     return null;
