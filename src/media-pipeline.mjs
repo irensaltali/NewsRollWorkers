@@ -27,6 +27,7 @@ import * as shaped from "./shaped.mjs";
 import { readableUrlFor } from "./visual-feed.mjs";
 import { buildFalImageRequest, generateImageWithProvider } from "./media-generation.mjs";
 import { buildPromptInput, clipPromptText, mediaTemplateWithFallback } from "./prompt-config.mjs";
+import { crawlUrl } from "./browser-rendering.mjs";
 
 export { buildFalImageRequest } from "./media-generation.mjs";
 
@@ -216,9 +217,30 @@ export async function processMediaMessage(batch, env) {
         }
       }
 
-      const crawlMetadata = resolvedArticle.metadata && typeof resolvedArticle.metadata === "object"
+      let crawlMetadata = resolvedArticle.metadata && typeof resolvedArticle.metadata === "object"
         ? resolvedArticle.metadata
         : null;
+
+      // If article text came from RSS/cache but metadata was never extracted, crawl for it now
+      if (!crawlMetadata && !resolvedArticle.aiHeadline && body.url) {
+        log.info({ event: "metadata_crawl_start", storyId, url: body.url });
+        const metaCrawl = await crawlUrl(env, body.url, { storyId });
+        if (metaCrawl.success && metaCrawl.metadata) {
+          crawlMetadata = metaCrawl.metadata;
+          log.info({ event: "metadata_crawl_ok", storyId });
+        } else {
+          const crawlError = metaCrawl.error ?? "no_metadata";
+          log.warn({ event: "metadata_crawl_fail", storyId, url: body.url, error: crawlError });
+          const isPermanent = /robots\.txt|disallowed|4\d\d/i.test(crawlError);
+          if (isPermanent) {
+            const sourceId = await getRSSSourceIdByStoryId(env, storyId);
+            if (sourceId) {
+              await setRSSSourceActive(env, sourceId, false);
+              log.warn({ event: "rss_source_deactivated", storyId, sourceId, reason: "metadata_crawl_blocked" });
+            }
+          }
+        }
+      }
       const title = crawlMetadata?.title ?? body.title ?? "Story";
       const extractedText = resolvedArticle.text || fallbackText;
       const sourceKind = resolvedArticle.sourceKind ?? (body.url ? "article" : "hn_text");

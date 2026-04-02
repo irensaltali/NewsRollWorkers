@@ -1,10 +1,11 @@
 import * as log from "./log.mjs";
 
 const MAX_MARKDOWN_LENGTH = 16000;
-const CRAWL_POLL_ATTEMPTS = 5;
+const CRAWL_POLL_ATTEMPTS = 10;
 const CRAWL_AI_POLL_ATTEMPTS = 30;
+const CRAWL_POLL_START_DELAY_MS = 2_000;
 const CRAWL_POLL_INITIAL_DELAY_MS = 1_000;
-const CRAWL_POLL_MAX_DELAY_MS = 30_000;
+const CRAWL_POLL_MAX_DELAY_MS = 10_000;
 const CRAWL_AI_POLL_DELAY_MS = 2_000;
 const DEFAULT_CRAWL_LIMIT = 1;
 const DEFAULT_CRAWL_DEPTH = 1;
@@ -381,7 +382,8 @@ async function fetchCrawlJob(accountId, apiToken, jobId, searchParams = null) {
   return data.result ?? null;
 }
 
-async function waitForCrawlJob(accountId, apiToken, jobId, { maxAttempts = CRAWL_POLL_ATTEMPTS, initialDelayMs = CRAWL_POLL_INITIAL_DELAY_MS, maxDelayMs = CRAWL_POLL_MAX_DELAY_MS } = {}) {
+async function waitForCrawlJob(accountId, apiToken, jobId, { maxAttempts = CRAWL_POLL_ATTEMPTS, startDelayMs = CRAWL_POLL_START_DELAY_MS, initialDelayMs = CRAWL_POLL_INITIAL_DELAY_MS, maxDelayMs = CRAWL_POLL_MAX_DELAY_MS } = {}) {
+  await sleep(startDelayMs);
   let delayMs = initialDelayMs;
   for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
     const result = await fetchCrawlJob(accountId, apiToken, jobId, { limit: 1 });

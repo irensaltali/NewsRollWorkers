@@ -235,11 +235,11 @@ export async function getReadableContent(env, storyId) {
 
   const { data } = await getDB(env)
     .from("story_content")
-    .select("extracted_text")
+    .select("extracted_text, ai_headline")
     .eq("story_id", storyId)
     .maybeSingle();
 
-  return data ? { extractedText: data.extracted_text } : null;
+  return data ? { extractedText: data.extracted_text, aiHeadline: data.ai_headline ?? null } : null;
 }
 
 export async function storeHeadline(env, storyId, headline, headlinePrompt) {

@@ -29,13 +29,14 @@ export async function resolveArticleContent(env, storyId, { title = "", text = "
     const readableContent = await getReadableContent(env, numericStoryId);
     const cachedText = normalizeText(readableContent?.extractedText);
     if (cachedText) {
-      log.info({ event: "resolve_article_hit", storyId: numericStoryId, sourceKind: "cache", textLength: cachedText.length });
+      log.info({ event: "resolve_article_hit", storyId: numericStoryId, sourceKind: "cache", textLength: cachedText.length, hasAiHeadline: Boolean(readableContent.aiHeadline) });
       return {
         title: normalizedTitle,
         text: cachedText,
         url: normalizedUrl,
         sourceKind: "cache",
-        metadata: null
+        metadata: null,
+        aiHeadline: readableContent.aiHeadline
       };
     }
     log.info({ event: "resolve_article_cache_miss", storyId: numericStoryId });
