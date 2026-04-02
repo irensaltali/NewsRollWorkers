@@ -32,7 +32,10 @@ function buildInsertPayload(rows) {
  * Fire-and-forget safe — never throws to caller.
  */
 export async function upsertItem(env, item) {
-  if (!isEnabled(env)) return { ok: true };
+  if (!isEnabled(env)) {
+    log.warn({ event: "shaped_disabled", storyId: item.storyId, reason: "missing_api_key" });
+    return { ok: true };
+  }
   try {
     const shapedItem = {
       item_id: String(item.storyId),
@@ -66,6 +69,7 @@ export async function upsertItem(env, item) {
       return { ok: false, reason: `http_${resp.status}` };
     }
 
+    log.info({ event: "shaped_upsert_ok", storyId: item.storyId });
     return { ok: true };
   } catch (err) {
     log.warn({ event: "shaped_upsert_error", storyId: item.storyId, ...log.fmtError(err) });
@@ -78,7 +82,11 @@ export async function upsertItem(env, item) {
  * Fire-and-forget safe — never throws to caller.
  */
 export async function trackEvents(env, userId, events) {
-  if (!isEnabled(env) || !events?.length) return { ok: true };
+  if (!isEnabled(env)) {
+    log.warn({ event: "shaped_disabled", reason: "missing_api_key" });
+    return { ok: true };
+  }
+  if (!events?.length) return { ok: true };
   try {
     const interactions = events
       .map((e) => ({

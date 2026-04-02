@@ -10,6 +10,7 @@ export const MEDIA_MAX_QUEUE_RETRIES = 3;
 export const MEDIA_DAILY_LIMIT_DEFAULT = 50;
 export const MEDIA_PER_RUN_LIMIT_DEFAULT = 5;
 export const MEDIA_MIN_SCORE_DEFAULT = 5;
+export const MEDIA_FALAI_DAILY_LIMIT_DEFAULT = 10;
 
 function intEnv(value, fallback) {
   const parsed = Number.parseInt(value ?? "", 10);

@@ -20,7 +20,8 @@ const ARTICLE_METADATA_PROMPT = [
   "1. The article title.",
   "2. A concise headline summary in at most 3 sentences.",
   "3. The detected article language as a short ISO-639-1 code when possible.",
-  "4. A clear AI-generated summary in the same language as the article."
+  "4. A clear AI-generated summary in the same language as the article.",
+  "5. A list of relevant topics as lowercase keywords (e.g., ai, privacy, security, data_retention)."
 ].join(" ");
 const ARTICLE_METADATA_SCHEMA = Object.freeze({
   name: "article_metadata",
@@ -43,9 +44,14 @@ const ARTICLE_METADATA_SCHEMA = Object.freeze({
       summary: {
         type: "string",
         description: "AI-generated summary in the same language as the article"
+      },
+      topics: {
+        type: "array",
+        description: "List of relevant topics as lowercase keywords",
+        items: { type: "string" }
       }
     },
-    required: ["title", "headline", "language", "summary"]
+    required: ["title", "headline", "language", "summary", "topics"]
   }
 });
 
@@ -142,11 +148,17 @@ export function normalizeArticleMetadata(value) {
     return null;
   }
 
+  const rawTopics = Array.isArray(value.topics) ? value.topics : [];
+  const topics = rawTopics
+    .filter((t) => typeof t === "string" && t.trim())
+    .map((t) => t.trim().toLowerCase().slice(0, 100));
+
   const metadata = {
     title: sanitizeMetadataString(value.title, 500),
     headline: sanitizeMetadataString(value.headline, 500),
     language: normalizeMetadataLanguage(value.language),
-    summary: sanitizeMetadataString(value.summary, 4000)
+    summary: sanitizeMetadataString(value.summary, 4000),
+    topics: topics.length > 0 ? topics : null
   };
 
   if (!metadata.title && !metadata.headline && !metadata.language && !metadata.summary) {
@@ -480,7 +492,20 @@ export async function crawlUrl(env, url, { storyId = null, limit = DEFAULT_CRAWL
 
     const { markdown, error, truncated } = readCrawlMarkdown(result, url);
     if (!markdown) {
-      log.warn({ event: "crawl_no_markdown", url, jobId, error });
+      const records = Array.isArray(result?.records) ? result.records : [];
+      log.warn({
+        event: "crawl_no_markdown",
+        url,
+        jobId,
+        error,
+        recordCount: records.length,
+        records: records.map((r) => ({
+          url: r?.url ?? null,
+          status: r?.status ?? null,
+          httpStatus: r?.metadata?.status ?? null,
+          markdownLength: typeof r?.markdown === "string" ? r.markdown.length : 0
+        }))
+      });
       return { markdown: null, success: false, error };
     }
 
@@ -520,7 +545,10 @@ export async function crawlUrl(env, url, { storyId = null, limit = DEFAULT_CRAWL
       url,
       jobId,
       markdownLength: markdown.length,
-      hasMetadata: Boolean(metadata)
+      markdown,
+      metadata,
+      truncated: Boolean(truncated),
+      rawJsonKey: rawJsonKey ?? null
     });
     return { markdown, metadata, success: true, rawJsonKey };
   } catch (err) {

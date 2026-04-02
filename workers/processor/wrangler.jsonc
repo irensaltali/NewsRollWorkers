@@ -26,7 +26,8 @@
 		"CLOUDFLARE_ACCOUNT_ID": "ccbc9926d08a298aee2a4f0cffcfc4a3",
 		"PUBLIC_API_BASE_URL": "https://api.newsroll.app",
 		"PUBLIC_MEDIA_BASE_URL": "https://media.newsroll.app",
-		"SUPABASE_URL": "https://snazihvdznshybaogwrx.supabase.co"
+		"SUPABASE_URL": "https://snazihvdznshybaogwrx.supabase.co",
+		"MEDIA_FALAI_LIMIT": "10"
 	},
 	"durable_objects": {
 		"bindings": [
@@ -71,7 +72,9 @@
 				"CLOUDFLARE_ACCOUNT_ID": "ccbc9926d08a298aee2a4f0cffcfc4a3",
 				"PUBLIC_API_BASE_URL": "https://api-staging.newsroll.app",
 				"PUBLIC_MEDIA_BASE_URL": "https://media-staging.newsroll.app",
-				"SUPABASE_URL": "https://snazihvdznshybaogwrx.supabase.co"
+				"SUPABASE_URL": "https://snazihvdznshybaogwrx.supabase.co",
+				"MEDIA_FALAI_LIMIT": "10",
+				"MEDIA_FALAI_PLACEHOLDER_URL": "https://media-staging.newsroll.app/stories/1137602991-0761b6f251d42f4576c8845c37afe619c2cdb96e2f4cf849ec43c39281d064d0.webp"
 			},
 			"durable_objects": {
 				"bindings": [

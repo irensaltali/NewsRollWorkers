@@ -217,6 +217,9 @@ async function upsertStoryContent(env, payload) {
   assignDefined(row, "feed_url", resolvedUrls.feedUrl);
   assignDefined(row, "summary", payload.summary);
   assignDefined(row, "explanation", payload.explanation);
+  assignDefined(row, "ai_headline", payload.aiHeadline);
+  assignDefined(row, "headline_prompt", payload.headlinePrompt);
+  assignDefined(row, "topics", payload.topics);
 
   await getDB(env)
     .from("story_content")
@@ -240,12 +243,12 @@ export async function getReadableContent(env, storyId) {
 }
 
 export async function storeHeadline(env, storyId, headline, headlinePrompt) {
-  if (!hasDB(env)) return;
-
-  await getDB(env)
-    .from("story_content")
-    .update({ ai_headline: headline, headline_prompt: headlinePrompt ?? null })
-    .eq("story_id", storyId);
+  await upsertStoryContent(env, {
+    storyId,
+    aiHeadline: headline,
+    headlinePrompt: headlinePrompt ?? null,
+    updatedAt: new Date().toISOString()
+  });
 }
 
 export async function storeStorySummary(env, payload) {
@@ -254,6 +257,7 @@ export async function storeStorySummary(env, payload) {
     sourceUrl: payload.sourceUrl ?? null,
     feedUrl: payload.feedUrl ?? null,
     summary: payload.summary,
+    topics: payload.topics ?? null,
     updatedAt: payload.updatedAt
   });
 }

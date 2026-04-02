@@ -16,7 +16,8 @@ import {
   MEDIA_MAX_QUEUE_RETRIES,
   MEDIA_DAILY_LIMIT_DEFAULT,
   MEDIA_PER_RUN_LIMIT_DEFAULT,
-  MEDIA_MIN_SCORE_DEFAULT
+  MEDIA_MIN_SCORE_DEFAULT,
+  MEDIA_FALAI_DAILY_LIMIT_DEFAULT
 } from "./config.mjs";
 import { resolveArticleContent } from "./article-content.mjs";
 import { publishReadyStoryViaCoordinator } from "./global-visual-feed-coordinator.mjs";
@@ -55,6 +56,31 @@ export function mediaPerRunLimit(env) {
   }
   const parsed = Number.parseInt(envVar, 10);
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : MEDIA_PER_RUN_LIMIT_DEFAULT;
+}
+
+export function falAiDailyLimit(env) {
+  const parsed = Number.parseInt(env?.MEDIA_FALAI_LIMIT ?? "", 10);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : MEDIA_FALAI_DAILY_LIMIT_DEFAULT;
+}
+
+const FAL_DAILY_KV_PREFIX = "fal:daily:";
+
+function todayUtcDate() {
+  return new Date().toISOString().slice(0, 10);
+}
+
+async function getDailyFalCount(env) {
+  if (!env?.VISUAL_FEED_CACHE?.get) return 0;
+  const value = await env.VISUAL_FEED_CACHE.get(`${FAL_DAILY_KV_PREFIX}${todayUtcDate()}`);
+  const parsed = Number.parseInt(value ?? "0", 10);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+async function incrementDailyFalCount(env) {
+  if (!env?.VISUAL_FEED_CACHE?.put) return;
+  const key = `${FAL_DAILY_KV_PREFIX}${todayUtcDate()}`;
+  const current = await getDailyFalCount(env);
+  await env.VISUAL_FEED_CACHE.put(key, String(current + 1), { expirationTtl: 90000 });
 }
 
 export function meetsMediaQualityGate(env, _category, story) {
@@ -209,26 +235,38 @@ export async function processMediaMessage(batch, env) {
       const contentHash = await hashText(extractedText);
 
       const headline = crawlMetadata?.headline ?? null;
-      if (headline) {
+      const summary = crawlMetadata?.summary ?? null;
+      const topics = Array.isArray(crawlMetadata?.topics) ? crawlMetadata.topics : null;
+
+      if (headline || summary || topics) {
         try {
           await storeHeadline(env, body.storyId, headline, null);
-          log.info({ event: "headline_ok", storyId, chars: headline.length, source: "crawl" });
-        } catch (err) {
-          log.warn({ event: "headline_store_fail", storyId, ...log.fmtError(err) });
-        }
-      }
-
-      if (crawlMetadata?.summary) {
-        try {
-          await storeStorySummary(env, {
-            storyId: body.storyId,
-            sourceUrl: body.url ?? null,
-            summary: crawlMetadata.summary,
-            updatedAt: now
+          if (summary) {
+            await storeStorySummary(env, {
+              storyId: body.storyId,
+              sourceUrl: body.url ?? null,
+              summary,
+              topics,
+              updatedAt: now
+            });
+          } else if (topics) {
+            await storeStorySummary(env, {
+              storyId: body.storyId,
+              sourceUrl: body.url ?? null,
+              topics,
+              updatedAt: now
+            });
+          }
+          log.info({
+            event: "crawl_metadata_stored",
+            storyId,
+            hasHeadline: Boolean(headline),
+            hasSummary: Boolean(summary),
+            topicCount: topics?.length ?? 0,
+            source: "crawl"
           });
-          log.info({ event: "summary_store_ok", storyId, chars: crawlMetadata.summary.length, source: "crawl" });
         } catch (err) {
-          log.warn({ event: "summary_store_fail", storyId, ...log.fmtError(err) });
+          log.warn({ event: "crawl_metadata_store_fail", storyId, ...log.fmtError(err) });
         }
       }
 
@@ -238,14 +276,36 @@ export async function processMediaMessage(batch, env) {
       );
       const imagePrompt = generatePrompt(template, { title, extractedText });
       const generationStart = Date.now();
-      const result = await generateImageWithProvider(env, {
-        provider: template.provider,
-        model: template.model,
-        settings: template.settings,
-        prompt: imagePrompt,
-        storyId,
-        allowPlaceholder: true
-      });
+
+      const falLimit = falAiDailyLimit(env);
+      const falDailyCount = await getDailyFalCount(env);
+      const falLimitReached = falLimit > 0 && falDailyCount >= falLimit;
+
+      let result;
+      if (falLimitReached) {
+        const placeholderUrl = env.MEDIA_FALAI_PLACEHOLDER_URL ?? null;
+        log.warn({ event: "fal_daily_limit_reached", storyId, dailyCount: falDailyCount, limit: falLimit });
+        result = {
+          status: "ready",
+          url: placeholderUrl,
+          requestId: "fal_limit_reached",
+          provider: "fal",
+          model: template.model ?? "fal-ai/flux-2/turbo"
+        };
+      } else {
+        result = await generateImageWithProvider(env, {
+          provider: template.provider,
+          model: template.model,
+          settings: template.settings,
+          prompt: imagePrompt,
+          storyId,
+          allowPlaceholder: true
+        });
+        if (result.provider === "fal" && result.status === "ready") {
+          await incrementDailyFalCount(env);
+        }
+      }
+
       const generationDurationMs = Date.now() - generationStart;
       let mediaKey = null;
       let mediaUrl = result.url;
@@ -334,7 +394,7 @@ export async function processMediaMessage(batch, env) {
         });
 
         if (publication.published) {
-          shaped.upsertItem(env, {
+          await shaped.upsertItem(env, {
             storyId: body.storyId,
             headline,
             category: body.endpoint,
@@ -347,7 +407,7 @@ export async function processMediaMessage(batch, env) {
             generationLatencyMs: generationDurationMs,
             promptTemplateId: template?.id ?? null,
             promptTemplateName: template?.name ?? null
-          }).catch(() => {});
+          });
         }
       } else {
         log.debug({
