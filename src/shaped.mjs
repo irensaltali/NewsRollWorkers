@@ -61,17 +61,7 @@ export async function upsertItem(env, item) {
       created_at: item.publishedAt ?? new Date().toISOString(),
       updated_at: new Date().toISOString(),
       headline: item.headline ?? null,
-      publisher: item.publisher ?? null,
       source_endpoint: item.sourceEndpoint ?? null,
-      topics_text: Array.isArray(item.topics) ? item.topics.join(" ") : item.topics ?? null,
-      entities_text: Array.isArray(item.entities)
-        ? item.entities.map((entity) => entity?.name ?? entity).filter(Boolean).join(" ")
-        : item.entities ?? null,
-      language: item.language ?? "en",
-      quality_score: item.qualityScore ?? 0.5,
-      novelty_score: item.noveltyScore ?? 0.5,
-      publisher_tier: item.publisherTier ?? 2,
-      source_reliability_score: item.sourceReliabilityScore ?? 0.5,
       media_url: item.mediaUrl ?? null,
       media_type: item.mediaType ?? null,
       media_provider: item.mediaProvider ?? null,
@@ -79,21 +69,7 @@ export async function upsertItem(env, item) {
       generation_status: item.generationStatus ?? null,
       prompt_template_id: item.promptTemplateId ?? null,
       prompt_template_name: item.promptTemplateName ?? null,
-      article_length: item.articleLength ?? null,
-      has_author: Boolean(item.hasAuthor),
-      topic_count: item.topicCount ?? (Array.isArray(item.topics) ? item.topics.length : null),
-      entity_count: item.entityCount ?? (Array.isArray(item.entities) ? item.entities.length : null),
       duplicate_cluster_size: item.duplicateClusterSize ?? 1,
-      ctr_5m: item.ctr5m ?? 0.0,
-      ctr_30m: item.ctr30m ?? 0.0,
-      ctr_2h: item.ctr2h ?? 0.0,
-      save_rate_2h: item.saveRate2h ?? 0.0,
-      skip_rate_30m: item.skipRate30m ?? 0.0,
-      completion_rate_2h: item.completionRate2h ?? 0.0,
-      detail_open_rate_2h: item.detailOpenRate2h ?? 0.0,
-      share_rate_2h: item.shareRate2h ?? 0.0,
-      hide_rate_2h: item.hideRate2h ?? 0.0,
-      ai_action_rate_24h: item.aiActionRate24h ?? 0.0
     };
 
     const url = `${SHAPED_BASE_URL}/v2/tables/${itemsTable(env)}/insert`;
@@ -141,7 +117,6 @@ export async function trackEvents(env, userId, events) {
         dwell_ms: e.dwellMs ?? null,
         media_type: e.mediaType ?? null,
         source_endpoint: e.sourceEndpoint ?? null,
-        topic_primary: e.topicPrimary ?? null,
         ai_action: e.aiAction ?? null
       }));
 
@@ -216,4 +191,3 @@ export async function rankItems(env, userId, candidateIds, { timeoutMs = 800 } =
     return [];
   }
 }
-

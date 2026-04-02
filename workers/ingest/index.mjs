@@ -1,9 +1,8 @@
 import { ingestStories, mediaPerRunLimit } from "../../src/media-pipeline.mjs";
 import { FEED_CATEGORIES } from "../../src/config.mjs";
-import { enrichPublishedStory } from "../../src/enrichment.mjs";
 import { aggregateStaleProfiles } from "../../src/profile-aggregator.mjs";
 import { updateStoryStats, cleanupOldEvents } from "../../src/stats-updater.mjs";
-import { cleanupStaleMedia, getUnenrichedStoryIds } from "../../src/db.mjs";
+import { cleanupStaleMedia } from "../../src/db.mjs";
 import * as log from "../../src/log.mjs";
 
 export default {
@@ -33,19 +32,6 @@ export default {
           log.error({ event: "cron_category_fail", cron: controller.cron, category, ...log.fmtError(err) });
         }
       }
-    }
-
-    try {
-      const unenrichedIds = await getUnenrichedStoryIds(env, 50);
-      for (const storyId of unenrichedIds) {
-        try {
-          await enrichPublishedStory(env, storyId);
-        } catch (err) {
-          log.warn({ event: "backfill_enrich_fail", storyId, ...log.fmtError(err) });
-        }
-      }
-    } catch (err) {
-      log.error({ event: "backfill_enrichment_fail", ...log.fmtError(err) });
     }
 
     try {

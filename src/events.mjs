@@ -1,6 +1,6 @@
 import * as log from "./log.mjs";
 import * as shaped from "./shaped.mjs";
-import { enrichEventsWithStoryContext, upsertUserSessionsFromEvents } from "./db.mjs";
+import { attachStoryContextToEvents, upsertUserSessionsFromEvents } from "./db.mjs";
 import { writeEventBatch } from "./event-analytics.mjs";
 
 export const VALID_EVENT_TYPES = new Set([
@@ -153,13 +153,13 @@ export async function storeEvents(env, userId, events) {
     return { stored: 0 };
   }
 
-  const enrichedEvents = await enrichEventsWithStoryContext(env, events);
-  await upsertUserSessionsFromEvents(env, userId, enrichedEvents);
-  const { stored } = await writeEventBatch(env, userId, enrichedEvents);
+  const contextualizedEvents = await attachStoryContextToEvents(env, events);
+  await upsertUserSessionsFromEvents(env, userId, contextualizedEvents);
+  const { stored } = await writeEventBatch(env, userId, contextualizedEvents);
 
   log.info({ event: "events_stored", userId, submitted: events.length, stored });
 
-  shaped.trackEvents(env, userId, enrichedEvents).catch(() => {});
+  shaped.trackEvents(env, userId, contextualizedEvents).catch(() => {});
 
   return { stored };
 }

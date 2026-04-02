@@ -49,12 +49,6 @@ ALTER TABLE public.published_feed_entries ADD COLUMN IF NOT EXISTS generation_la
 ALTER TABLE public.published_feed_entries ADD COLUMN IF NOT EXISTS generation_cost_usd DOUBLE PRECISION;
 ALTER TABLE public.published_feed_entries ADD COLUMN IF NOT EXISTS prompt_template_id BIGINT;
 ALTER TABLE public.published_feed_entries ADD COLUMN IF NOT EXISTS prompt_template_name TEXT;
-ALTER TABLE public.published_feed_entries ADD COLUMN IF NOT EXISTS topic_count INTEGER;
-ALTER TABLE public.published_feed_entries ADD COLUMN IF NOT EXISTS entity_count INTEGER;
-ALTER TABLE public.published_feed_entries ADD COLUMN IF NOT EXISTS detail_open_rate_2h DOUBLE PRECISION DEFAULT 0;
-ALTER TABLE public.published_feed_entries ADD COLUMN IF NOT EXISTS share_rate_2h DOUBLE PRECISION DEFAULT 0;
-ALTER TABLE public.published_feed_entries ADD COLUMN IF NOT EXISTS hide_rate_2h DOUBLE PRECISION DEFAULT 0;
-ALTER TABLE public.published_feed_entries ADD COLUMN IF NOT EXISTS ai_action_rate_24h DOUBLE PRECISION DEFAULT 0;
 
 -- ── User interactions / sessions ────────────────────────────────────────────
 
@@ -68,7 +62,6 @@ ALTER TABLE public.user_events ADD COLUMN IF NOT EXISTS dwell_ms INTEGER;
 ALTER TABLE public.user_events ADD COLUMN IF NOT EXISTS metadata_json JSONB;
 ALTER TABLE public.user_events ADD COLUMN IF NOT EXISTS label DOUBLE PRECISION;
 ALTER TABLE public.user_events ADD COLUMN IF NOT EXISTS source_endpoint TEXT;
-ALTER TABLE public.user_events ADD COLUMN IF NOT EXISTS topic_primary TEXT;
 ALTER TABLE public.user_events ADD COLUMN IF NOT EXISTS media_type TEXT;
 ALTER TABLE public.user_events ADD COLUMN IF NOT EXISTS ai_action TEXT;
 ALTER TABLE public.user_events ADD COLUMN IF NOT EXISTS ai_cached BOOLEAN;
@@ -113,7 +106,7 @@ CREATE TABLE IF NOT EXISTS public.user_sessions (
 
 CREATE INDEX IF NOT EXISTS user_sessions_user_started_idx ON public.user_sessions(user_id, started_at DESC);
 
--- ── RPC: insert events with idempotency + story enrichment ──────────────────
+-- ── RPC: insert events with idempotency + story context ─────────────────────
 
 CREATE OR REPLACE FUNCTION public.insert_events_deduped(
   p_user_id UUID,
@@ -170,10 +163,6 @@ BEGIN
           ELSE 'image'
         END
       ) AS media_type,
-      CASE
-        WHEN jsonb_typeof(pfe.topics) = 'array' THEN pfe.topics->>0
-        ELSE NULL
-      END AS topic_primary,
       COALESCE(
         n.incoming_label,
         CASE
@@ -216,7 +205,6 @@ BEGIN
       metadata_json,
       label,
       source_endpoint,
-      topic_primary,
       media_type,
       ai_action,
       ai_cached,
@@ -238,7 +226,6 @@ BEGIN
       metadata_json,
       label,
       source_endpoint,
-      topic_primary,
       media_type,
       ai_action,
       ai_cached,
@@ -351,8 +338,6 @@ CREATE OR REPLACE FUNCTION public.get_profile_events(
   event_type TEXT,
   label DOUBLE PRECISION,
   source_endpoint TEXT,
-  topic_primary TEXT,
-  topics JSONB,
   occurred_at TEXT,
   created_at TEXT
 )
@@ -363,11 +348,6 @@ AS $$
     ue.event_type,
     ue.label,
     COALESCE(ue.source_endpoint, pfe.source_endpoint) AS source_endpoint,
-    COALESCE(ue.topic_primary, CASE WHEN jsonb_typeof(pfe.topics) = 'array' THEN pfe.topics->>0 ELSE NULL END) AS topic_primary,
-    CASE
-      WHEN pfe.topics IS NULL THEN '[]'::jsonb
-      ELSE pfe.topics
-    END AS topics,
     ue.occurred_at,
     ue.created_at::text
   FROM public.user_events ue

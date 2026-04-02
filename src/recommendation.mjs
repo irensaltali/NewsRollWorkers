@@ -4,19 +4,15 @@ import { getUserProfile, getRecommendationCandidates, getSeenStoryIds } from "./
 import { FOR_YOU_MIN_EVENTS_DEFAULT } from "./config.mjs";
 
 export const SCORE_WEIGHTS = {
-  topic: 0.35,
-  engagement: 0.20,
-  quality: 0.15,
-  freshness: 0.15,
-  endpoint: 0.10,
+  engagement: 0.45,
+  freshness: 0.30,
+  endpoint: 0.20,
   exploration: 0.05
 };
 
 export function getWeights(env) {
   return {
-    topic: parseFloat(env?.SCORE_W_TOPIC ?? SCORE_WEIGHTS.topic),
     engagement: parseFloat(env?.SCORE_W_ENGAGEMENT ?? SCORE_WEIGHTS.engagement),
-    quality: parseFloat(env?.SCORE_W_QUALITY ?? SCORE_WEIGHTS.quality),
     freshness: parseFloat(env?.SCORE_W_FRESHNESS ?? SCORE_WEIGHTS.freshness),
     endpoint: parseFloat(env?.SCORE_W_ENDPOINT ?? SCORE_WEIGHTS.endpoint),
     exploration: parseFloat(env?.SCORE_W_EXPLORATION ?? SCORE_WEIGHTS.exploration)
@@ -37,26 +33,17 @@ export function decodeCursor(cursor) {
   }
 }
 
-function topicMatchScore(userTopics, storyTopics) {
-  if (!userTopics || !storyTopics || storyTopics.length === 0) return 0;
+export function computeFreshnessScore(publishedAt) {
+  if (!publishedAt) return 0.5;
 
-  let dotProduct = 0;
-  let userMag = 0;
-  let storyMag = 0;
+  const publishedAtMs = new Date(publishedAt).getTime();
+  if (!Number.isFinite(publishedAtMs)) return 0.5;
 
-  const storySet = new Set(storyTopics);
-  const allTopics = new Set([...Object.keys(userTopics), ...storyTopics]);
+  const hoursAgo = (Date.now() - publishedAtMs) / (1000 * 60 * 60);
+  if (hoursAgo <= 0) return 1.0;
+  if (hoursAgo >= 48) return 0.1;
 
-  for (const topic of allTopics) {
-    const uScore = userTopics[topic] ?? 0;
-    const sScore = storySet.has(topic) ? 1.0 : 0;
-    dotProduct += uScore * sScore;
-    userMag += uScore * uScore;
-    storyMag += sScore * sScore;
-  }
-
-  const magnitude = Math.sqrt(userMag) * Math.sqrt(storyMag);
-  return magnitude > 0 ? dotProduct / magnitude : 0;
+  return 1.0 - (0.9 * hoursAgo) / 48;
 }
 
 function expectedEngagement(story) {
@@ -67,20 +54,6 @@ function expectedEngagement(story) {
 }
 
 export function scoreStory(story, profile, weights) {
-  let storyTopics;
-  try {
-    storyTopics = typeof story.topics === "string" ? JSON.parse(story.topics) : story.topics;
-  } catch {
-    storyTopics = [];
-  }
-
-  let userTopics;
-  try {
-    userTopics = typeof profile.topicScores === "string" ? JSON.parse(profile.topicScores) : profile.topicScores;
-  } catch {
-    userTopics = {};
-  }
-
   let userEndpoints;
   try {
     userEndpoints = typeof profile.endpointScores === "string" ? JSON.parse(profile.endpointScores) : profile.endpointScores;
@@ -88,17 +61,13 @@ export function scoreStory(story, profile, weights) {
     userEndpoints = {};
   }
 
-  const topicMatch = topicMatchScore(userTopics, storyTopics);
   const engagement = expectedEngagement(story);
-  const quality = story.qualityScore ?? 0.5;
-  const freshness = story.noveltyScore ?? 0.5;
+  const freshness = computeFreshnessScore(story.publishedAt);
   const endpointMatch = userEndpoints[story.sourceEndpoint] ?? 0;
   const exploration = Math.random();
 
   return (
-    weights.topic * topicMatch +
     weights.engagement * engagement +
-    weights.quality * quality +
     weights.freshness * freshness +
     weights.endpoint * endpointMatch +
     weights.exploration * exploration
@@ -108,39 +77,24 @@ export function scoreStory(story, profile, weights) {
 export function rerank(scoredItems) {
   const result = [];
   let consecutiveEndpoint = 0;
-  let consecutiveTopic = 0;
   let lastEndpoint = null;
-  let lastPrimaryTopic = null;
 
   const sorted = [...scoredItems].sort((a, b) => b.score - a.score);
   const deferred = [];
 
   for (const item of sorted) {
-    let storyTopics;
-    try {
-      storyTopics = typeof item.topics === "string" ? JSON.parse(item.topics) : item.topics;
-    } catch {
-      storyTopics = [];
-    }
-
-    const primaryTopic = storyTopics[0] ?? null;
     const sameEndpoint = item.sourceEndpoint === lastEndpoint;
-    const sameTopic = primaryTopic && primaryTopic === lastPrimaryTopic;
 
     if (sameEndpoint) consecutiveEndpoint++;
     else consecutiveEndpoint = 1;
 
-    if (sameTopic) consecutiveTopic++;
-    else consecutiveTopic = 1;
-
-    if (consecutiveEndpoint > 2 || consecutiveTopic > 3) {
+    if (consecutiveEndpoint > 2) {
       deferred.push(item);
       continue;
     }
 
     result.push(item);
     lastEndpoint = item.sourceEndpoint;
-    lastPrimaryTopic = primaryTopic;
   }
 
   result.push(...deferred);
@@ -229,7 +183,7 @@ export async function generateRecommendedFeed(env, userId, { cursor: cursorParam
   // Local scoring fallback
   const scored = unseenCandidates.map((candidate) => ({
     ...candidate,
-    score: scoreStory(candidate, profile ?? { topicScores: {}, endpointScores: {} }, weights)
+    score: scoreStory(candidate, profile ?? { endpointScores: {} }, weights)
   }));
 
   let ranked = rerank(scored);

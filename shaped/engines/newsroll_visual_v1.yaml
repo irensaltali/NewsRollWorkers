@@ -11,10 +11,7 @@ index:
   lexical_search:
     item_fields:
       - headline
-      - publisher
       - source_endpoint
-      - topics_text
-      - entities_text
   embeddings:
     - name: content_embedding
       encoder:
@@ -23,10 +20,7 @@ index:
         batch_size: 256
         item_fields:
           - headline
-          - publisher
           - source_endpoint
-          - topics_text
-          - entities_text
 training:
   models:
     - name: two_tower

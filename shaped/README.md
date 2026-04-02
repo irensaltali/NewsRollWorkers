@@ -21,7 +21,7 @@ NewsRoll is a fast-moving content feed with:
 For that shape of product, the best Shaped usage is:
 
 - stream interactions in real time
-- upsert item metadata whenever enrichment/velocity changes
+- upsert item metadata whenever stories publish or velocity changes
 - start with a simple engine that works even before model training
 - add collaborative filtering once interaction volume is meaningful
 
@@ -53,7 +53,7 @@ shaped view-engine --engine-name newsroll_visual_v1
 
 Item upserts should happen when:
 
-- a story is first enriched
+- a story is first published
 - velocity metrics change materially
 - metadata changes that affect ranking/search
 
@@ -91,23 +91,7 @@ Keep one row per story/item. Recommended required fields:
 - `created_at`
 - `updated_at`
 - `headline`
-- `topics_text`
-- `entities_text`
-- `publisher`
 - `source_endpoint`
-
-Strong ranking features for NewsRoll:
-
-- `quality_score`
-- `novelty_score`
-- `publisher_tier`
-- `source_reliability_score`
-- `ctr_5m`
-- `ctr_30m`
-- `ctr_2h`
-- `save_rate_2h`
-- `skip_rate_30m`
-- `completion_rate_2h`
 
 ### Interactions table
 
@@ -129,7 +113,6 @@ Additional ranking context:
 - `feed_mode`
 - `media_type`
 - `source_endpoint`
-- `topic_primary`
 - `ai_action`
 
 ## Recommended event labels
@@ -159,20 +142,11 @@ Adjust these after observing feed behavior. For news, over-weighting impressions
 
 Shaped works best when the item table already contains the ranking/search fields you care about. Do not depend on runtime joins if you can avoid it.
 
-### 2. Add text-ready columns
-
-For text search and semantic retrieval, store flattened strings such as:
-
-- `topics_text`
-- `entities_text`
-
-instead of relying only on arrays.
-
-### 3. Use real-time events, not batch-only interactions
+### 2. Use real-time events, not batch-only interactions
 
 For a news app, interaction freshness matters. Push events continuously.
 
-### 4. Keep the current local fallback
+### 3. Keep the current local fallback
 
 Do not make Shaped your only ranking path until:
 
@@ -180,7 +154,7 @@ Do not make Shaped your only ranking path until:
 - event volume is healthy
 - you have observed stable output quality
 
-### 5. Version engines, not tables
+### 4. Version engines, not tables
 
 Tables should remain stable. Most ranking experimentation should happen in versioned engine YAML files.
 

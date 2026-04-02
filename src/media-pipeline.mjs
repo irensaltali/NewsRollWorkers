@@ -18,7 +18,6 @@ import {
 } from "./config.mjs";
 import { resolveArticleContent } from "./article-content.mjs";
 import { publishReadyStoryViaCoordinator } from "./global-visual-feed-coordinator.mjs";
-import { enrichPublishedStory } from "./enrichment.mjs";
 import { ingestCategory } from "./rss-ingest.mjs";
 import * as log from "./log.mjs";
 import * as shaped from "./shaped.mjs";
@@ -321,11 +320,6 @@ export async function processMediaMessage(batch, env) {
             promptTemplateId: template?.id ?? null,
             promptTemplateName: template?.name ?? null
           }).catch(() => {});
-          try {
-            await enrichPublishedStory(env, body.storyId, { crawlMetadata });
-          } catch (enrichErr) {
-            log.warn({ event: "enrich_after_publish_fail", storyId, ...log.fmtError(enrichErr) });
-          }
         }
       } else {
         log.debug({

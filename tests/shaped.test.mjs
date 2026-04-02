@@ -31,36 +31,15 @@ test("upsertItem sends item rows to the Shaped insert endpoint", async () => {
           created_at: "2025-01-01T00:00:00.000Z",
           updated_at: "2025-01-01T00:00:00.000Z",
           headline: null,
-          publisher: null,
           source_endpoint: null,
-          topics_text: null,
-          entities_text: null,
-          language: "en",
-          quality_score: 0.5,
-          novelty_score: 0.5,
-          publisher_tier: 2,
-          source_reliability_score: 0.5,
+          media_url: null,
           media_type: null,
           media_provider: null,
           media_model: null,
           generation_status: null,
           prompt_template_id: null,
           prompt_template_name: null,
-          article_length: null,
-          has_author: false,
-          topic_count: null,
-          entity_count: null,
-          duplicate_cluster_size: 1,
-          ctr_5m: 0,
-          ctr_30m: 0,
-          ctr_2h: 0,
-          save_rate_2h: 0,
-          skip_rate_30m: 0,
-          completion_rate_2h: 0,
-          detail_open_rate_2h: 0,
-          share_rate_2h: 0,
-          hide_rate_2h: 0,
-          ai_action_rate_24h: 0
+          duplicate_cluster_size: 1
         }
       ]
     });
@@ -109,7 +88,6 @@ test("trackEvents sends interaction rows to the Shaped insert endpoint", async (
           dwell_ms: null,
           media_type: null,
           source_endpoint: null,
-          topic_primary: null,
           ai_action: null
         }
       ]

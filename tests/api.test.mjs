@@ -33,7 +33,6 @@ function createColdStartDb(rows) {
             async first() {
               if (sql.includes("FROM user_profiles")) {
                 return {
-                  topicScores: "{}",
                   endpointScores: "{}",
                   totalImpressions: 0,
                   totalEngagements: 0

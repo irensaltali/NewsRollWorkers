@@ -35,7 +35,6 @@ function getDB(env) {
 export function computeProfileData(rows) {
   if (!rows || rows.length === 0) return null;
 
-  const topicScores = {};
   const endpointScores = {};
   let totalImpressions = 0;
   let totalEngagements = 0;
@@ -57,26 +56,9 @@ export function computeProfileData(rows) {
       totalEngagements += eventCount;
     }
 
-    const topics = Array.isArray(row.topics)
-      ? row.topics
-      : (typeof row.topics === "string"
-          ? JSON.parse(row.topics)
-          : (typeof row.topics_json === "string" && row.topics_json
-              ? JSON.parse(row.topics_json)
-              : (row.topic_primary ? [row.topic_primary] : [])));
-
-    for (const topic of topics) {
-      topicScores[topic] = (topicScores[topic] ?? 0) + effectiveWeight;
-    }
-
     if (sourceEndpoint) {
       endpointScores[sourceEndpoint] = (endpointScores[sourceEndpoint] ?? 0) + effectiveWeight;
     }
-  }
-
-  const maxTopic = Math.max(...Object.values(topicScores), 1);
-  for (const key of Object.keys(topicScores)) {
-    topicScores[key] = Math.round((topicScores[key] / maxTopic) * 1000) / 1000;
   }
 
   const maxEndpoint = Math.max(...Object.values(endpointScores), 1);
@@ -84,7 +66,7 @@ export function computeProfileData(rows) {
     endpointScores[key] = Math.round((endpointScores[key] / maxEndpoint) * 1000) / 1000;
   }
 
-  return { topicScores, endpointScores, totalImpressions, totalEngagements };
+  return { endpointScores, totalImpressions, totalEngagements };
 }
 
 export async function aggregateProfile(env, userId) {
@@ -104,7 +86,6 @@ export async function aggregateProfile(env, userId) {
     .from("user_profiles")
     .upsert({
       user_id: userId,
-      topic_scores: profile.topicScores,
       endpoint_scores: profile.endpointScores,
       media_pref: {},
       total_impressions: profile.totalImpressions,
@@ -115,7 +96,7 @@ export async function aggregateProfile(env, userId) {
   log.info({
     event: "profile_aggregated",
     userId,
-    topicCount: Object.keys(profile.topicScores).length,
+    endpointCount: Object.keys(profile.endpointScores).length,
     totalImpressions: profile.totalImpressions,
     totalEngagements: profile.totalEngagements
   });

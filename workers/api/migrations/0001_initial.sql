@@ -69,14 +69,10 @@ CREATE TABLE published_feed_entries (
   publish_sequence INTEGER NOT NULL UNIQUE,
   source_endpoint TEXT NOT NULL,
   published_at TEXT NOT NULL,
-  topics TEXT DEFAULT '[]',
-  quality_score REAL DEFAULT 0.5,
-  novelty_score REAL DEFAULT 0.5,
   engagement_count INTEGER DEFAULT 0,
   impression_count INTEGER DEFAULT 0
 );
 CREATE INDEX published_feed_entries_sequence_idx ON published_feed_entries(publish_sequence DESC);
-CREATE INDEX pfe_quality_idx ON published_feed_entries(quality_score DESC);
 
 -- User events for recommendation.
 CREATE TABLE user_events (
@@ -93,7 +89,6 @@ CREATE INDEX user_events_story_idx ON user_events(story_id, event_type);
 -- User profile scores for personalization.
 CREATE TABLE user_profiles (
   installation_id TEXT PRIMARY KEY,
-  topic_scores TEXT NOT NULL DEFAULT '{}',
   endpoint_scores TEXT NOT NULL DEFAULT '{}',
   media_pref TEXT NOT NULL DEFAULT '{}',
   total_impressions INTEGER NOT NULL DEFAULT 0,

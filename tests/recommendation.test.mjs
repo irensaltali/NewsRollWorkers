@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import {
+  computeFreshnessScore,
   scoreStory,
   rerank,
   encodeCursor,
@@ -13,16 +14,13 @@ const defaultWeights = { ...SCORE_WEIGHTS };
 
 test("scoreStory produces a numeric score", () => {
   const story = {
-    topics: '["ai", "startup"]',
-    qualityScore: 0.8,
-    noveltyScore: 0.9,
+    publishedAt: new Date().toISOString(),
     sourceEndpoint: "front",
     engagementCount: 10,
     impressionCount: 100
   };
 
   const profile = {
-    topicScores: { ai: 0.9, webdev: 0.5 },
     endpointScores: { front: 0.8, show: 0.3 }
   };
 
@@ -31,48 +29,50 @@ test("scoreStory produces a numeric score", () => {
   assert.ok(score > 0, `Score should be positive, got ${score}`);
 });
 
-test("scoreStory favors stories matching user topics", () => {
-  const matchingStory = {
-    topics: '["ai"]',
-    qualityScore: 0.5,
-    noveltyScore: 0.5,
+test("scoreStory favors stories from preferred endpoints", () => {
+  const frontStory = {
+    publishedAt: new Date().toISOString(),
     sourceEndpoint: "front",
     engagementCount: 0,
     impressionCount: 0
   };
 
-  const nonMatchingStory = {
-    topics: '["gaming"]',
-    qualityScore: 0.5,
-    noveltyScore: 0.5,
-    sourceEndpoint: "front",
+  const showStory = {
+    publishedAt: new Date().toISOString(),
+    sourceEndpoint: "show",
     engagementCount: 0,
     impressionCount: 0
   };
 
   const profile = {
-    topicScores: { ai: 1.0 },
-    endpointScores: {}
+    endpointScores: { front: 1.0, show: 0.0 }
   };
 
-  // Run multiple times to account for exploration randomness
-  let matchWins = 0;
+  let preferredWins = 0;
   for (let i = 0; i < 20; i++) {
-    const matchScore = scoreStory(matchingStory, profile, defaultWeights);
-    const nonMatchScore = scoreStory(nonMatchingStory, profile, defaultWeights);
-    if (matchScore > nonMatchScore) matchWins++;
+    const frontScore = scoreStory(frontStory, profile, defaultWeights);
+    const showScore = scoreStory(showStory, profile, defaultWeights);
+    if (frontScore > showScore) preferredWins++;
   }
 
-  assert.ok(matchWins > 10, `Matching story should win most of the time, won ${matchWins}/20`);
+  assert.ok(preferredWins > 10, `Preferred endpoint should win most of the time, won ${preferredWins}/20`);
+});
+
+test("computeFreshnessScore decays over time", () => {
+  const now = Date.now();
+  const fresh = computeFreshnessScore(new Date(now).toISOString());
+  const old = computeFreshnessScore(new Date(now - 48 * 60 * 60 * 1000).toISOString());
+
+  assert.ok(fresh > old, `fresh (${fresh}) should be > old (${old})`);
 });
 
 test("rerank prevents more than 2 consecutive same endpoints", () => {
   const items = [
-    { storyId: 1, sourceEndpoint: "front", topics: '["ai"]', score: 1.0 },
-    { storyId: 2, sourceEndpoint: "front", topics: '["webdev"]', score: 0.9 },
-    { storyId: 3, sourceEndpoint: "front", topics: '["startup"]', score: 0.8 },
-    { storyId: 4, sourceEndpoint: "show", topics: '["rust"]', score: 0.7 },
-    { storyId: 5, sourceEndpoint: "front", topics: '["ai"]', score: 0.6 }
+    { storyId: 1, sourceEndpoint: "front", score: 1.0 },
+    { storyId: 2, sourceEndpoint: "front", score: 0.9 },
+    { storyId: 3, sourceEndpoint: "front", score: 0.8 },
+    { storyId: 4, sourceEndpoint: "show", score: 0.7 },
+    { storyId: 5, sourceEndpoint: "front", score: 0.6 }
   ];
 
   const ranked = rerank(items);
@@ -83,27 +83,6 @@ test("rerank prevents more than 2 consecutive same endpoints", () => {
       ranked[i].sourceEndpoint === ranked[i - 1].sourceEndpoint &&
       ranked[i - 1].sourceEndpoint === ranked[i - 2].sourceEndpoint;
     assert.ok(!threeSame, `Three consecutive same endpoints at position ${i}`);
-  }
-});
-
-test("rerank prevents more than 3 consecutive same primary topic", () => {
-  const items = [
-    { storyId: 1, sourceEndpoint: "front", topics: '["ai"]', score: 1.0 },
-    { storyId: 2, sourceEndpoint: "show", topics: '["ai"]', score: 0.9 },
-    { storyId: 3, sourceEndpoint: "best", topics: '["ai"]', score: 0.8 },
-    { storyId: 4, sourceEndpoint: "new", topics: '["ai"]', score: 0.7 },
-    { storyId: 5, sourceEndpoint: "front", topics: '["webdev"]', score: 0.6 }
-  ];
-
-  const ranked = rerank(items);
-
-  for (let i = 3; i < ranked.length; i++) {
-    const parse = (t) => { try { return JSON.parse(t)[0]; } catch { return null; } };
-    const fourSame =
-      parse(ranked[i].topics) === parse(ranked[i - 1].topics) &&
-      parse(ranked[i - 1].topics) === parse(ranked[i - 2].topics) &&
-      parse(ranked[i - 2].topics) === parse(ranked[i - 3].topics);
-    assert.ok(!fourSame, `Four consecutive same topics at position ${i}`);
   }
 });
 

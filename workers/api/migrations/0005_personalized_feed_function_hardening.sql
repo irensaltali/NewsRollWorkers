@@ -57,10 +57,6 @@ BEGIN
           ELSE 'image'
         END
       ) AS media_type,
-      CASE
-        WHEN jsonb_typeof(pfe.topics) = 'array' THEN pfe.topics->>0
-        ELSE NULL
-      END AS topic_primary,
       COALESCE(
         n.incoming_label,
         CASE
@@ -103,7 +99,6 @@ BEGIN
       metadata_json,
       label,
       source_endpoint,
-      topic_primary,
       media_type,
       ai_action,
       ai_cached,
@@ -125,7 +120,6 @@ BEGIN
       metadata_json,
       label,
       source_endpoint,
-      topic_primary,
       media_type,
       ai_action,
       ai_cached,
@@ -232,8 +226,6 @@ CREATE OR REPLACE FUNCTION public.get_profile_events(
   event_type TEXT,
   label DOUBLE PRECISION,
   source_endpoint TEXT,
-  topic_primary TEXT,
-  topics JSONB,
   occurred_at TEXT,
   created_at TEXT
 )
@@ -245,11 +237,6 @@ AS $$
     ue.event_type,
     ue.label,
     COALESCE(ue.source_endpoint, pfe.source_endpoint) AS source_endpoint,
-    COALESCE(ue.topic_primary, CASE WHEN jsonb_typeof(pfe.topics) = 'array' THEN pfe.topics->>0 ELSE NULL END) AS topic_primary,
-    CASE
-      WHEN pfe.topics IS NULL THEN '[]'::jsonb
-      ELSE pfe.topics
-    END AS topics,
     ue.occurred_at,
     ue.created_at::text
   FROM public.user_events ue

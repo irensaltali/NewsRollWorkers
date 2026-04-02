@@ -411,7 +411,7 @@ export async function upsertUserSessionsFromEvents(env, userId, events) {
   return rows.length;
 }
 
-export async function enrichEventsWithStoryContext(env, events) {
+export async function attachStoryContextToEvents(env, events) {
   if (!hasDB(env) || !events?.length) {
     return events;
   }
@@ -423,31 +423,16 @@ export async function enrichEventsWithStoryContext(env, events) {
 
   const { data } = await getDB(env)
     .from("published_feed_entries")
-    .select("story_id, source_endpoint, media_type, topics")
+    .select("story_id, source_endpoint, media_type")
     .in("story_id", storyIds);
 
   const byStoryId = new Map((data ?? []).map((row) => [row.story_id, row]));
   return events.map((event) => {
     const story = byStoryId.get(event.storyId);
-    let topicPrimary = event.topicPrimary ?? null;
-    let topics = event.topics ?? null;
-    if (!topicPrimary && story?.topics) {
-      try {
-        const parsedTopics = typeof story.topics === "string" ? JSON.parse(story.topics) : story.topics;
-        topicPrimary = Array.isArray(parsedTopics) ? parsedTopics[0] ?? null : null;
-        topics = Array.isArray(parsedTopics) ? parsedTopics : null;
-      } catch {
-        topicPrimary = null;
-        topics = null;
-      }
-    }
-
     return {
       ...event,
       sourceEndpoint: event.sourceEndpoint ?? story?.source_endpoint ?? null,
-      mediaType: event.mediaType ?? story?.media_type ?? null,
-      topicPrimary,
-      topics
+      mediaType: event.mediaType ?? story?.media_type ?? null
     };
   });
 }
@@ -467,7 +452,6 @@ export async function getUserProfile(env, userId) {
   return {
     userId: data.user_id,
     platform: data.platform,
-    topicScores: data.topic_scores,
     endpointScores: data.endpoint_scores,
     mediaPref: data.media_pref,
     totalImpressions: data.total_impressions,
@@ -483,7 +467,6 @@ export async function upsertUserProfile(env, userId, profile) {
     .from("user_profiles")
     .upsert({
       user_id: userId,
-      topic_scores: profile.topicScores ?? {},
       endpoint_scores: profile.endpointScores ?? {},
       media_pref: profile.mediaPref ?? {},
       total_impressions: profile.totalImpressions ?? 0,
@@ -582,27 +565,11 @@ export async function getRecommendationCandidates(env, limit = 200) {
     publishSequence: r.publish_sequence,
     sourceEndpoint: r.source_endpoint,
     publishedAt: r.published_at,
-    topics: r.topics,
-    qualityScore: r.quality_score,
-    noveltyScore: r.novelty_score,
     engagementCount: r.engagement_count,
     impressionCount: r.impression_count,
     mediaUrl: r.media_url,
     mediaStatus: r.media_status,
     headline: r.headline,
-    publisher: r.publisher,
-    language: r.language,
-    entities: r.entities,
-    publisherTier: r.publisher_tier,
-    sourceReliabilityScore: r.source_reliability_score,
-    hasAuthor: r.has_author,
-    articleLength: r.article_length,
-    ctr5m: r.ctr_5m,
-    ctr30m: r.ctr_30m,
-    ctr2h: r.ctr_2h,
-    saveRate2h: r.save_rate_2h,
-    skipRate30m: r.skip_rate_30m,
-    completionRate2h: r.completion_rate_2h,
     mediaType: r.media_type,
     mediaProvider: r.media_provider,
     mediaModel: r.media_model,
@@ -611,12 +578,6 @@ export async function getRecommendationCandidates(env, limit = 200) {
     generationCostUsd: r.generation_cost_usd,
     promptTemplateId: r.prompt_template_id,
     promptTemplateName: r.prompt_template_name,
-    topicCount: r.topic_count,
-    entityCount: r.entity_count,
-    detailOpenRate2h: r.detail_open_rate_2h,
-    shareRate2h: r.share_rate_2h,
-    hideRate2h: r.hide_rate_2h,
-    aiActionRate24h: r.ai_action_rate_24h,
     readableUrl: r.readable_url
   }));
 }
@@ -909,85 +870,6 @@ export async function getStoryContentMetadataByStoryId(env, storyId) {
   };
 }
 
-export async function getRSSItemByStoryId(env, storyId) {
-  if (!hasDB(env)) return null;
-
-  const [itemResult, countResult] = await Promise.all([
-    getDB(env)
-      .from("rss_items")
-      .select("*, rss_sources!inner(name, tier, reliability_score, language, feed_url)")
-      .eq("story_id", storyId)
-      .order("rss_sources(tier)", { ascending: true })
-      .order("ingested_at", { ascending: true })
-      .limit(1)
-      .maybeSingle(),
-    getDB(env)
-      .from("rss_items")
-      .select("*", { count: "exact", head: true })
-      .eq("story_id", storyId)
-  ]);
-
-  const r = itemResult.data;
-  if (!r) return null;
-
-  return {
-    ...r,
-    sourceName: r.rss_sources?.name ?? null,
-    sourceTier: r.rss_sources?.tier ?? 2,
-    sourceReliability: r.rss_sources?.reliability_score ?? null,
-    sourceLanguage: r.rss_sources?.language ?? "en",
-    feedUrl: r.rss_sources?.feed_url ?? null,
-    sourceCount: countResult.count ?? 1
-  };
-}
-
-export async function getPublishedStoryForEnrichment(env, storyId) {
-  if (!hasDB(env)) return null;
-
-  const { data: p } = await getDB(env)
-    .from("published_feed_entries")
-    .select("story_id, source_endpoint, published_at")
-    .eq("story_id", storyId)
-    .maybeSingle();
-
-  if (!p) return null;
-
-  const { data: c } = await getDB(env)
-    .from("story_content")
-    .select("extracted_text")
-    .eq("story_id", storyId)
-    .maybeSingle();
-
-  return {
-    storyId: p.story_id,
-    sourceEndpoint: p.source_endpoint,
-    publishedAt: p.published_at,
-    extractedText: c?.extracted_text ?? null
-  };
-}
-
-export async function updatePublishedFeedEntryEnrichment(env, storyId, fields) {
-  if (!hasDB(env)) return;
-
-  await getDB(env)
-    .from("published_feed_entries")
-    .update({
-      topics: fields.topics,
-      quality_score: fields.qualityScore,
-      novelty_score: fields.noveltyScore,
-      language: fields.language,
-      entities: fields.entities,
-      article_length: fields.articleLength,
-      topic_count: fields.topicCount ?? fields.topics?.length ?? null,
-      entity_count: fields.entityCount ?? fields.entities?.length ?? null,
-      has_author: fields.hasAuthor,
-      publisher: fields.publisher,
-      publisher_tier: fields.publisherTier,
-      source_reliability_score: fields.sourceReliabilityScore
-    })
-    .eq("story_id", storyId);
-}
-
 export async function updateStoryStats(env) {
   if (!hasDB(env)) return 0;
 
@@ -1019,22 +901,4 @@ export async function cleanupOldUserEvents(env, days = 30) {
   void env;
   void days;
   return 0;
-}
-
-export async function getUnenrichedStoryIds(env, limit = 50) {
-  if (!hasDB(env)) return [];
-  const { data } = await getDB(env)
-    .from("published_feed_entries")
-    .select("story_id")
-    .or("topics.eq.[],topics.is.null")
-    .limit(limit);
-  return (data ?? []).map((r) => r.story_id);
-}
-
-export async function updatePublishedFeedEntryTopics(env, storyId, topics) {
-  if (!hasDB(env)) return;
-  await getDB(env)
-    .from("published_feed_entries")
-    .update({ topics: JSON.stringify(topics) })
-    .eq("story_id", storyId);
 }

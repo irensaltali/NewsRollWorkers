@@ -8,33 +8,12 @@ column_schema:
   created_at: DateTime
   updated_at: DateTime
   headline: String
-  publisher: String
   source_endpoint: String
-  topics_text: String
-  entities_text: String
-  language: String
-  quality_score: Float
-  novelty_score: Float
-  publisher_tier: Int32
-  source_reliability_score: Float
+  media_url: String
   media_type: String
   media_provider: String
   media_model: String
   generation_status: String
   prompt_template_id: Int64
   prompt_template_name: String
-  has_author: Bool
-  article_length: Int32
-  topic_count: Int32
-  entity_count: Int32
   duplicate_cluster_size: Int32
-  ctr_5m: Float
-  ctr_30m: Float
-  ctr_2h: Float
-  save_rate_2h: Float
-  skip_rate_30m: Float
-  completion_rate_2h: Float
-  detail_open_rate_2h: Float
-  share_rate_2h: Float
-  hide_rate_2h: Float
-  ai_action_rate_24h: Float

@@ -33,13 +33,6 @@ function analyticsEndpoint(env) {
   return `https://api.cloudflare.com/client/v4/accounts/${env.CLOUDFLARE_ACCOUNT_ID}/analytics_engine/sql`;
 }
 
-function topicsJson(topics) {
-  if (!Array.isArray(topics) || topics.length === 0) {
-    return null;
-  }
-  return JSON.stringify(topics);
-}
-
 export async function writeEventBatch(env, userId, events) {
   if (!events?.length) {
     return { stored: 0 };
@@ -61,9 +54,7 @@ export async function writeEventBatch(env, userId, events) {
         event.feedMode ?? "",
         event.mediaType ?? "",
         event.sourceEndpoint ?? "",
-        event.topicPrimary ?? "",
         event.aiAction ?? "",
-        topicsJson(event.topics) ?? "",
         event.eventId ?? ""
       ],
       doubles: [
@@ -149,8 +140,6 @@ export async function queryProfileEvents(env, userId, days = 30) {
       SELECT
         blob3 AS event_type,
         blob8 AS source_endpoint,
-        blob9 AS topic_primary,
-        blob11 AS topics_json,
         double2 AS label,
         timestamp AS created_at
       FROM ${eventAnalyticsTable(env)}

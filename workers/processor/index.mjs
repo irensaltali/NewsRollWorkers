@@ -29,8 +29,8 @@ export default {
 
     const mediaMessages = [];
     for (const message of batch.messages) {
-      if (message.body?.type === "enrich_topics") {
-        log.info({ event: "topic_enrich_skip", storyId: message.body?.storyId ?? null, reason: "crawl_metadata_replaced_llm" });
+      if (message.body?.type && message.body.type !== "media_generation") {
+        log.warn({ event: "queue_message_drop", storyId: message.body?.storyId ?? null, type: message.body.type });
         message.ack();
         continue;
       }

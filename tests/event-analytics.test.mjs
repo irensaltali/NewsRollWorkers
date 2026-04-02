@@ -6,7 +6,7 @@ import {
   writeEventBatch
 } from "../src/event-analytics.mjs";
 
-test("writeEventBatch writes enriched event rows to Analytics Engine", async () => {
+test("writeEventBatch writes event rows to Analytics Engine", async () => {
   const writes = [];
   const env = {
     EVENT_ANALYTICS: {
@@ -25,9 +25,7 @@ test("writeEventBatch writes enriched event rows to Analytics Engine", async () 
     feedMode: "for_you",
     mediaType: "image",
     sourceEndpoint: "tech",
-    topicPrimary: "ai",
     aiAction: null,
-    topics: ["ai", "startups"],
     label: 0.05,
     dwellMs: 0,
     aiCreditsUsed: 0
@@ -45,9 +43,7 @@ test("writeEventBatch writes enriched event rows to Analytics Engine", async () 
       "for_you",
       "image",
       "tech",
-      "ai",
       "",
-      "[\"ai\",\"startups\"]",
       "evt-1"
     ],
     doubles: [1, 0.05, 0, 0]
@@ -83,4 +79,3 @@ test("querySeenStoryIds reads distinct story ids from Analytics Engine SQL API",
     globalThis.fetch = originalFetch;
   }
 });
-

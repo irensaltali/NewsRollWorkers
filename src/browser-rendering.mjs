@@ -20,8 +20,7 @@ const ARTICLE_METADATA_PROMPT = [
   "1. The article title.",
   "2. A concise headline summary in at most 3 sentences.",
   "3. The detected article language as a short ISO-639-1 code when possible.",
-  "4. A clear AI-generated summary in the same language as the article.",
-  "5. A list of relevant lowercase topic keywords using snake_case when needed."
+  "4. A clear AI-generated summary in the same language as the article."
 ].join(" ");
 const ARTICLE_METADATA_SCHEMA = Object.freeze({
   name: "article_metadata",
@@ -44,16 +43,9 @@ const ARTICLE_METADATA_SCHEMA = Object.freeze({
       summary: {
         type: "string",
         description: "AI-generated summary in the same language as the article"
-      },
-      topics: {
-        type: "array",
-        description: "Relevant lowercase topic keywords",
-        items: { type: "string" },
-        minItems: 1,
-        maxItems: 8
       }
     },
-    required: ["title", "headline", "language", "summary", "topics"]
+    required: ["title", "headline", "language", "summary"]
   }
 });
 
@@ -145,40 +137,19 @@ function normalizeMetadataLanguage(value) {
   return normalized.toLowerCase();
 }
 
-function normalizeMetadataTopic(value) {
-  if (typeof value !== "string") {
-    return null;
-  }
-
-  const normalized = value
-    .trim()
-    .toLowerCase()
-    .replace(/[\s-]+/g, "_")
-    .replace(/[^a-z0-9_]/g, "")
-    .replace(/_+/g, "_")
-    .replace(/^_+|_+$/g, "");
-
-  return normalized || null;
-}
-
 export function normalizeArticleMetadata(value) {
   if (!value || typeof value !== "object") {
     return null;
   }
 
-  const topics = Array.isArray(value.topics)
-    ? [...new Set(value.topics.map(normalizeMetadataTopic).filter(Boolean))].slice(0, 8)
-    : [];
-
   const metadata = {
     title: sanitizeMetadataString(value.title, 500),
     headline: sanitizeMetadataString(value.headline, 500),
     language: normalizeMetadataLanguage(value.language),
-    summary: sanitizeMetadataString(value.summary, 4000),
-    topics
+    summary: sanitizeMetadataString(value.summary, 4000)
   };
 
-  if (!metadata.title && !metadata.headline && !metadata.language && !metadata.summary && metadata.topics.length === 0) {
+  if (!metadata.title && !metadata.headline && !metadata.language && !metadata.summary) {
     return null;
   }
 

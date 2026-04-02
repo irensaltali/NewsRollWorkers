@@ -66,7 +66,7 @@ test("article metadata json options use the expected schema contract", () => {
   assert.equal(jsonOptions.response_format.json_schema.schema.additionalProperties, false);
   assert.deepEqual(
     jsonOptions.response_format.json_schema.schema.required,
-    ["title", "headline", "language", "summary", "topics"]
+    ["title", "headline", "language", "summary"]
   );
 });
 
@@ -75,14 +75,12 @@ test("normalizeArticleMetadata trims and normalizes crawl metadata", () => {
     title: "  Example Title  ",
     headline: "  Three sentence summary.  ",
     language: " EN ",
-    summary: "  Summary body.  ",
-    topics: ["AI", "data retention", "AI", "privacy-policy"]
+    summary: "  Summary body.  "
   }), {
     title: "Example Title",
     headline: "Three sentence summary.",
     language: "en",
-    summary: "Summary body.",
-    topics: ["ai", "data_retention", "privacy_policy"]
+    summary: "Summary body."
   });
 });
 
@@ -175,8 +173,7 @@ test("crawlUrl submits and polls the Cloudflare crawl API", async (t) => {
                 title: "Crawled title",
                 headline: "Crawled hook.",
                 language: "en",
-                summary: "Crawled summary.",
-                topics: ["energy", "oil_prices"]
+                summary: "Crawled summary."
               },
               metadata: { status: 200 }
             }
@@ -203,8 +200,7 @@ test("crawlUrl submits and polls the Cloudflare crawl API", async (t) => {
     title: "Crawled title",
     headline: "Crawled hook.",
     language: "en",
-    summary: "Crawled summary.",
-    topics: ["energy", "oil_prices"]
+    summary: "Crawled summary."
   });
   assert.equal(calls.length, 2);
   assert.equal(calls[0].init.method, "POST");
