@@ -237,16 +237,16 @@ CREATE INDEX prompt_test_results_lookup_idx ON prompt_test_results(prompt_kind, 
 INSERT INTO prompt_templates (name, description, template_text, modality, provider, model, settings_json) VALUES
   ('editorial_v1', 'Clean editorial illustration',
    'Editorial illustration for a news story titled "${title}". Article summary: ${sourceText}. Focus on clarity and modern flat-style illustration.',
-   'image', 'fal', 'flux-2-turbo', '{"guidance_scale":2.5,"image_size":"portrait_16_9","num_images":1,"enable_safety_checker":true,"output_format":"webp","enable_prompt_expansion":true}'),
+   'image', 'fal', 'fal-ai/flux-2/turbo', '{"guidance_scale":2.5,"image_size":"portrait_16_9","num_images":1,"enable_safety_checker":true,"output_format":"webp","enable_prompt_expansion":true}'),
   ('editorial_v2_blueprint_noir', 'Blueprint noir style',
    'Create a cinematic editorial illustration for "${title}" as if it were a blueprint pinned to a dark studio wall. Translate this source material into diagrams, sketches, annotated arrows, and luminous interface fragments: ${sourceText}',
-   'image', 'fal', 'flux-2-turbo', '{"guidance_scale":2.5,"image_size":"portrait_16_9","num_images":1,"enable_safety_checker":true,"output_format":"webp","enable_prompt_expansion":true}'),
+   'image', 'fal', 'fal-ai/flux-2/turbo', '{"guidance_scale":2.5,"image_size":"portrait_16_9","num_images":1,"enable_safety_checker":true,"output_format":"webp","enable_prompt_expansion":true}'),
   ('founders_desk_midnight', 'Midnight desk scene',
    'Illustrate "${title}" from the point of view of someone working late at a cluttered desk. Mix laptop glow, sticky notes, rough prototypes, coffee rings, and subtle city lights. Let the article context drive the objects on the desk: ${sourceText}',
-   'image', 'fal', 'flux-2-turbo', '{"guidance_scale":2.5,"image_size":"portrait_16_9","num_images":1,"enable_safety_checker":true,"output_format":"webp","enable_prompt_expansion":true}'),
+   'image', 'fal', 'fal-ai/flux-2/turbo', '{"guidance_scale":2.5,"image_size":"portrait_16_9","num_images":1,"enable_safety_checker":true,"output_format":"webp","enable_prompt_expansion":true}'),
   ('newsroom_infographic', 'Magazine infographic',
    'Create a premium magazine-style infographic illustration for "${title}" with charts, icons, mini-scenes, and editorial typography arranged in a single cohesive spread. Use the article details as the narrative spine: ${sourceText}',
-   'image', 'fal', 'flux-2-turbo', '{"guidance_scale":2.5,"image_size":"portrait_16_9","num_images":1,"enable_safety_checker":true,"output_format":"webp","enable_prompt_expansion":true}');
+   'image', 'fal', 'fal-ai/flux-2/turbo', '{"guidance_scale":2.5,"image_size":"portrait_16_9","num_images":1,"enable_safety_checker":true,"output_format":"webp","enable_prompt_expansion":true}');
 
 -- Seed AI prompt configs
 INSERT INTO ai_prompt_configs (key, name, provider, model, max_completion_tokens, system_prompt, user_prompt_template) VALUES

@@ -1,10 +1,10 @@
-import { ingestStories, processMediaMessage } from "../../src/media-pipeline.mjs";
+import { ingestStories, mediaPerRunLimit, processMediaMessage } from "../../src/media-pipeline.mjs";
 import { FEED_CATEGORIES } from "../../src/config.mjs";
 import { GlobalVisualFeedCoordinator } from "../../src/global-visual-feed-coordinator.mjs";
-import { enrichPublishedStory, extractTopicsLLM } from "../../src/enrichment.mjs";
+import { enrichPublishedStory } from "../../src/enrichment.mjs";
 import { aggregateStaleProfiles } from "../../src/profile-aggregator.mjs";
 import { updateStoryStats, cleanupOldEvents, updateVelocitySignals } from "../../src/stats-updater.mjs";
-import { cleanupStaleMedia, getPromptTemplateStats, getUnenrichedStoryIds, updatePublishedFeedEntryTopics } from "../../src/db.mjs";
+import { cleanupStaleMedia, getPromptTemplateStats, getUnenrichedStoryIds } from "../../src/db.mjs";
 import * as log from "../../src/log.mjs";
 
 export { GlobalVisualFeedCoordinator };
@@ -35,9 +35,17 @@ export default {
     const start = Date.now();
     log.info({ event: "cron_start", cron: controller.cron, categories: FEED_CATEGORIES.length });
     if (controller.cron === "*/5 * * * *") {
+      let remainingMediaBudget = mediaPerRunLimit(env);
       for (const category of FEED_CATEGORIES) {
+        if (remainingMediaBudget <= 0) {
+          log.info({ event: "cron_media_run_limit_reached", cron: controller.cron, remainingMediaBudget });
+          break;
+        }
         try {
-          await ingestStories(env, category);
+          const result = await ingestStories(env, category, {
+            remainingQueueBudget: remainingMediaBudget
+          });
+          remainingMediaBudget = Math.max(0, remainingMediaBudget - Number(result?.queued ?? 0));
         } catch (err) {
           log.error({ event: "cron_category_fail", cron: controller.cron, category, ...log.fmtError(err) });
         }
@@ -102,36 +110,18 @@ export default {
     log.info({ event: "queue_batch_start", queue: batch.queue, count: batch.messages.length });
     const start = Date.now();
 
-    // Separate enrich_topics messages from media messages
-    const enrichMessages = [];
     const mediaMessages = [];
     for (const message of batch.messages) {
       if (message.body?.type === "enrich_topics") {
-        enrichMessages.push(message);
-      } else {
-        mediaMessages.push(message);
+        log.info({ event: "topic_enrich_skip", storyId: message.body?.storyId ?? null, reason: "crawl_metadata_replaced_llm" });
+        message.ack();
+        continue;
       }
+      mediaMessages.push(message);
     }
 
-    // Process media messages
     if (mediaMessages.length > 0) {
       await processMediaMessage({ ...batch, messages: mediaMessages }, env);
-    }
-
-    // Process topic enrichment messages
-    for (const message of enrichMessages) {
-      try {
-        const { storyId, title, text } = message.body;
-        const topics = await extractTopicsLLM(env, storyId, title, text);
-        if (topics) {
-          await updatePublishedFeedEntryTopics(env, storyId, topics);
-          log.info({ event: "topic_llm_updated", storyId, topics });
-        }
-        message.ack();
-      } catch (err) {
-        log.error({ event: "topic_enrich_fail", storyId: message.body?.storyId, ...log.fmtError(err) });
-        message.retry();
-      }
     }
 
     log.info({ event: "queue_batch_complete", queue: batch.queue, count: batch.messages.length, durationMs: Date.now() - start });

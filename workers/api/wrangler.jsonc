@@ -7,18 +7,20 @@
 		"nodejs_compat_v2"
 	],
 	// Required secrets (wrangler secret put):
-	// - SUPABASE_SERVICE_ROLE_KEY
+	// - SUPABASE_SECRET_KEY
 	// - SUPABASE_JWT_SECRET
 	// - OPENAI_API_KEY
 	// - REVENUECAT_SECRET_KEY
+	// - CLOUDFLARE_API_TOKEN
 	// - SHAPED_API_KEY
 	"vars": {
 		"APP_NAME": "NewsRoll",
 		"ENVIRONMENT": "production",
 		"CLOUDFLARE_ACCOUNT_ID": "ccbc9926d08a298aee2a4f0cffcfc4a3",
+		"EVENT_ANALYTICS_DATASET": "newsroll_user_events",
 		"PUBLIC_BASE_URL": "https://api.newsroll.app",
 		"PUBLIC_API_BASE_URL": "https://api.newsroll.app",
-		"PUBLIC_MEDIA_BASE_URL": "https://media.newsroll.app",
+			"PUBLIC_MEDIA_BASE_URL": "https://media.newsroll.app",
 		"REVENUECAT_APP_ID": "app8fd0f68a2b",
 		"REVENUECAT_PROJECT_ID": "proj503ccfa0",
 		"SHAPED_ENGINE_NAME": "newsroll_visual_v1",
@@ -33,15 +35,15 @@
 		}
 	],
 	"kv_namespaces": [
-		{
-			"binding": "VISUAL_FEED_CACHE",
-			"id": "458b4eb196ef47bcb0a2af1ed5f67f29"
-		}
+			{
+				"binding": "VISUAL_FEED_CACHE",
+				"id": "4cd0d14a54554f23a9afd0006b23c2c3"
+			}
 	],
-	"r2_buckets": [
+	"analytics_engine_datasets": [
 		{
-			"binding": "MEDIA_BUCKET",
-			"bucket_name": "newsroll-media-staging"
+			"binding": "EVENT_ANALYTICS",
+			"dataset": "newsroll_user_events"
 		}
 	],
 	"observability": {
@@ -60,9 +62,10 @@
 				"APP_NAME": "NewsRoll",
 				"ENVIRONMENT": "staging",
 				"CLOUDFLARE_ACCOUNT_ID": "ccbc9926d08a298aee2a4f0cffcfc4a3",
+				"EVENT_ANALYTICS_DATASET": "newsroll_user_events",
 				"PUBLIC_BASE_URL": "https://api-staging.newsroll.app",
 				"PUBLIC_API_BASE_URL": "https://api-staging.newsroll.app",
-				"PUBLIC_MEDIA_BASE_URL": "https://media-staging.newsroll.app",
+					"PUBLIC_MEDIA_BASE_URL": "https://media-staging.newsroll.app",
 				"REVENUECAT_APP_ID": "app8fd0f68a2b",
 				"REVENUECAT_PROJECT_ID": "proj503ccfa0",
 				"SHAPED_ENGINE_NAME": "newsroll_visual_v1",
@@ -77,15 +80,15 @@
 				}
 			],
 			"kv_namespaces": [
-				{
-					"binding": "VISUAL_FEED_CACHE",
-					"id": "458b4eb196ef47bcb0a2af1ed5f67f29"
-				}
+					{
+						"binding": "VISUAL_FEED_CACHE",
+						"id": "4cd0d14a54554f23a9afd0006b23c2c3"
+					}
 			],
-			"r2_buckets": [
+			"analytics_engine_datasets": [
 				{
-					"binding": "MEDIA_BUCKET",
-					"bucket_name": "newsroll-media-staging"
+					"binding": "EVENT_ANALYTICS",
+					"dataset": "newsroll_user_events"
 				}
 			],
 			"observability": {

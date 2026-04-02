@@ -8,6 +8,7 @@ export const VISUAL_FEED_SNAPSHOT_KEY = "visual-feed:global:v1";
 export const VISUAL_FEED_CACHE_TTL_SECONDS = 60;
 export const MEDIA_MAX_QUEUE_RETRIES = 3;
 export const MEDIA_DAILY_LIMIT_DEFAULT = 50;
+export const MEDIA_PER_RUN_LIMIT_DEFAULT = 5;
 export const MEDIA_MIN_SCORE_DEFAULT = 5;
 
 function intEnv(value, fallback) {

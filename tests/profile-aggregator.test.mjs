@@ -13,6 +13,11 @@ test("aggregateProfile returns null when SUPABASE_URL is absent", async () => {
   assert.equal(result, null);
 });
 
+test("aggregateProfile returns null when the Supabase secret key is absent", async () => {
+  const result = await aggregateProfile({ SUPABASE_URL: "https://example.supabase.co" }, "test-user");
+  assert.equal(result, null);
+});
+
 test("computeProfileData returns null for empty events", () => {
   assert.equal(computeProfileData([]), null);
   assert.equal(computeProfileData(null), null);

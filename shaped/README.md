@@ -191,7 +191,7 @@ The current worker integration is expected to use:
 1. `SHAPED_ENGINE_NAME=newsroll_visual_v1`
 2. `SHAPED_ITEMS_TABLE=newsroll_items`
 3. `SHAPED_INTERACTIONS_TABLE=newsroll_interactions`
-4. `POST /v2/tables/{table}/table_insert` for streaming items and interactions
+4. `POST /v2/tables/{table}/insert` with JSON `{"data":[...]}` for streaming items and interactions
 5. `POST /v2/engines/{engine}/query` with a ShapedQL candidate-ID reranking query
 
 Treat this folder as the source of truth for Shaped provisioning and engine evolution.

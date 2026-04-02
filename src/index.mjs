@@ -6,6 +6,8 @@ import {
   createPromptRunEvent,
   hasAIRequestReceipt,
   listPublishedVisualFeed,
+  storeStoryExplanation,
+  storeStorySummary,
   storeAIRequestReceipt,
   storeCachedAIResult
 } from "./db.mjs";
@@ -296,7 +298,8 @@ async function handleStructuredCachedAIRequest(request, env, {
   generate,
   toResponsePayload,
   resultType = actionKey,
-  provider = "openai"
+  provider = "openai",
+  persistResult = null
 }) {
   const user = await requireUser(request, env);
   const userErr = guardUser(user);
@@ -395,6 +398,9 @@ async function handleStructuredCachedAIRequest(request, env, {
     model: AI_ACTIONS[actionKey].model,
     expiresAt: aiCacheExpiryIso(actionKey)
   });
+  if (typeof persistResult === "function") {
+    await persistResult(payload, result, responsePayload);
+  }
 
   await createPromptRunEvent(env, {
     source: "app_api",
@@ -492,7 +498,10 @@ async function userContext(request, env) {
   const token = bearerToken(request);
   if (!token) return null;
 
-  const claims = await verifySupabaseJWT(token, env.SUPABASE_JWT_SECRET);
+  const claims = await verifySupabaseJWT(token, {
+    jwtSecret: env.SUPABASE_JWT_SECRET,
+    supabaseUrl: env.SUPABASE_URL
+  });
   return claims?.sub ? { userId: claims.sub } : null;
 }
 
@@ -613,28 +622,6 @@ async function handleForYouFeed(request, env) {
   });
 }
 
-async function handleMediaAsset(env, mediaPath) {
-  if (!env.MEDIA_BUCKET?.get) {
-    return error("media bucket is not configured", 404);
-  }
-
-  const object = await env.MEDIA_BUCKET.get(mediaPath);
-  if (!object) {
-    return error("media not found", 404);
-  }
-
-  const headers = new Headers();
-  object.writeHttpMetadata(headers);
-  headers.set("etag", object.httpEtag);
-  headers.set("cache-control", "public, max-age=31536000, immutable");
-  if (!headers.has("content-type")) {
-    headers.set("content-type", "image/jpeg");
-  }
-
-  return new Response(object.body, {
-    headers
-  });
-}
 
 async function handleAISummary(request, env) {
   const user = await requireUser(request, env);
@@ -712,6 +699,12 @@ async function handleAISummary(request, env) {
   }
 
   await storeCachedAIResult(env, { cacheKey, resultType: "summary", storyId, resultText: result, model: AI_ACTIONS.summary.model });
+  await storeStorySummary(env, {
+    storyId,
+    sourceUrl: body.url ?? null,
+    summary: result,
+    updatedAt: now()
+  });
   await createPromptRunEvent(env, {
     source: "app_api",
     promptKind: "ai",
@@ -941,6 +934,14 @@ async function handleAIExplain(request, env) {
       level: result.level,
       contentHash: payload.contentHash
     }),
+    persistResult: async (payload, result) => {
+      await storeStoryExplanation(env, {
+        storyId: payload.storyId,
+        sourceUrl: payload.url ?? body.url ?? null,
+        explanation: formatExplainResult(result),
+        updatedAt: now()
+      });
+    },
     resultType: actionKey
   });
 }
@@ -992,10 +993,6 @@ async function routeRequest(request, env) {
   if (request.method === "GET" && segments[0] === "v1" && segments[1] === "stories" && segments[2] && segments[3] === "article") {
     const response = await handleReadableArticle(env, segments[2]);
     return { response, route: "readable_article" };
-  }
-  if (request.method === "GET" && segments[0] === "media" && segments[1]) {
-    const response = await handleMediaAsset(env, segments.slice(1).join("/"));
-    return { response, route: "media_asset" };
   }
 
   return { response: error("Route not found", 404), route: null };

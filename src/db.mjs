@@ -2,15 +2,26 @@ import { createClient } from "@supabase/supabase-js";
 import { fixtureFeed } from "./fixtures.mjs";
 import { normalizePersistedCostFields, serializeCostFields } from "./model-catalog.mjs";
 import { AI_PROMPT_KEYS, DEFAULT_AI_PROMPT_CONFIGS, parsePromptSettings } from "./prompt-config.mjs";
+import {
+  queryActiveStoryIds,
+  querySeenStoryIds,
+  queryStoryStats,
+  queryStoryVelocityWindow
+} from "./event-analytics.mjs";
+import * as log from "./log.mjs";
+
+export function getSupabaseSecretKey(env) {
+  return env?.SUPABASE_SECRET_KEY ?? env?.SUPABASE_SERVICE_ROLE_KEY ?? null;
+}
 
 function getDB(env) {
-  return createClient(env.SUPABASE_URL, env.SUPABASE_SERVICE_ROLE_KEY, {
+  return createClient(env.SUPABASE_URL, getSupabaseSecretKey(env), {
     auth: { persistSession: false }
   });
 }
 
-function hasDB(env) {
-  return Boolean(env?.SUPABASE_URL && env?.SUPABASE_SERVICE_ROLE_KEY);
+export function hasDB(env) {
+  return Boolean(env?.SUPABASE_URL && getSupabaseSecretKey(env));
 }
 
 function getLegacyTestDB(env) {
@@ -29,6 +40,39 @@ function row(data) {
 
 function rows(data) {
   return (data ?? []).map(row);
+}
+
+function normalizeNullableText(value) {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return trimmed || null;
+}
+
+function assignDefined(target, key, value) {
+  if (value !== undefined && value !== null) {
+    target[key] = value;
+  }
+}
+
+export function isRSSSourceDueForFetch(source, now = Date.now()) {
+  const lastFetchedAt = source?.lastFetchedAt ?? source?.last_fetched_at ?? null;
+  const rawInterval = source?.fetchIntervalMinutes ?? source?.fetch_interval_minutes ?? null;
+  const intervalMinutes = Number.parseInt(`${rawInterval ?? ""}`, 10);
+
+  if (!lastFetchedAt) {
+    return true;
+  }
+
+  const lastFetchedMs = Date.parse(lastFetchedAt);
+  if (!Number.isFinite(lastFetchedMs)) {
+    return true;
+  }
+
+  if (!Number.isFinite(intervalMinutes) || intervalMinutes <= 0) {
+    return true;
+  }
+
+  return now - lastFetchedMs >= intervalMinutes * 60_000;
 }
 
 function fixturePublishedFeed(cursor = null, limit = 20) {
@@ -137,17 +181,53 @@ export async function storeStory(env, storyId, endpoint, rank) {
 
 // ── Story content ─────────────────────────────────────────────────────────────
 
-export async function storeReadableContent(env, payload) {
+async function resolveStoryContentUrls(env, storyId, { sourceUrl = null, feedUrl = null } = {}) {
+  let resolvedSourceUrl = normalizeNullableText(sourceUrl);
+  let resolvedFeedUrl = normalizeNullableText(feedUrl);
+
+  if ((!resolvedSourceUrl || !resolvedFeedUrl) && Number.isInteger(Number(storyId)) && Number(storyId) > 0) {
+    const rssItem = await getStoryContentMetadataByStoryId(env, storyId);
+    if (!resolvedSourceUrl) {
+      resolvedSourceUrl = normalizeNullableText(rssItem?.canonicalUrl ?? rssItem?.url ?? null);
+    }
+    if (!resolvedFeedUrl) {
+      resolvedFeedUrl = normalizeNullableText(rssItem?.feedUrl ?? null);
+    }
+  }
+
+  return {
+    sourceUrl: resolvedSourceUrl,
+    feedUrl: resolvedFeedUrl
+  };
+}
+
+async function upsertStoryContent(env, payload) {
   if (!hasDB(env)) return;
+
+  const resolvedUrls = await resolveStoryContentUrls(env, payload.storyId, {
+    sourceUrl: payload.sourceUrl ?? null,
+    feedUrl: payload.feedUrl ?? null
+  });
+
+  const row = {
+    story_id: payload.storyId,
+    updated_at: payload.updatedAt
+  };
+
+  assignDefined(row, "source_kind", payload.sourceKind);
+  assignDefined(row, "extracted_text", payload.extractedText);
+  assignDefined(row, "source_url", resolvedUrls.sourceUrl);
+  assignDefined(row, "feed_url", resolvedUrls.feedUrl);
+  assignDefined(row, "summary", payload.summary);
+  assignDefined(row, "explanation", payload.explanation);
 
   await getDB(env)
     .from("story_content")
-    .upsert({
-      story_id: payload.storyId,
-      source_kind: payload.sourceKind,
-      extracted_text: payload.extractedText,
-      updated_at: payload.updatedAt
-    });
+    .upsert(row);
+}
+
+export async function storeReadableContent(env, payload) {
+  await upsertStoryContent(env, payload);
 }
 
 export async function getReadableContent(env, storyId) {
@@ -169,6 +249,26 @@ export async function storeHeadline(env, storyId, headline, headlinePrompt) {
     .from("story_content")
     .update({ ai_headline: headline, headline_prompt: headlinePrompt ?? null })
     .eq("story_id", storyId);
+}
+
+export async function storeStorySummary(env, payload) {
+  await upsertStoryContent(env, {
+    storyId: payload.storyId,
+    sourceUrl: payload.sourceUrl ?? null,
+    feedUrl: payload.feedUrl ?? null,
+    summary: payload.summary,
+    updatedAt: payload.updatedAt
+  });
+}
+
+export async function storeStoryExplanation(env, payload) {
+  await upsertStoryContent(env, {
+    storyId: payload.storyId,
+    sourceUrl: payload.sourceUrl ?? null,
+    feedUrl: payload.feedUrl ?? null,
+    explanation: payload.explanation,
+    updatedAt: payload.updatedAt
+  });
 }
 
 // ── Story media ───────────────────────────────────────────────────────────────
@@ -243,52 +343,74 @@ export async function getPromptTemplateStats(env, days = 30) {
   }));
 }
 
-// ── User events ───────────────────────────────────────────────────────────────
+// ── Event-derived state ───────────────────────────────────────────────────────
 
-export async function batchInsertEvents(env, userId, events) {
-  if (!hasDB(env) || events.length === 0) return { stored: 0 };
+export async function upsertUserSessionsFromEvents(env, userId, events) {
+  if (!hasDB(env) || events.length === 0) return 0;
 
-  try {
-    const { data } = await getDB(env).rpc("insert_events_deduped", {
-      p_user_id: userId,
-      p_events: JSON.stringify(events)
-    });
-
-    return { stored: Number(data ?? 0) };
-  } catch {
-    const rowsToInsert = events.map((event) => ({
-      event_id: event.eventId,
-      user_id: userId,
-      story_id: event.storyId,
-      event_type: event.eventType,
-      occurred_at: event.occurredAt,
-      session_id: event.sessionId ?? null,
+  const aggregates = new Map();
+  for (const event of events) {
+    if (!event.sessionId) continue;
+    const current = aggregates.get(event.sessionId) ?? {
+      sessionId: event.sessionId,
       surface: event.surface ?? "unknown",
-      position: event.position ?? null,
-      feed_mode: event.feedMode ?? null,
-      dwell_ms: event.dwellMs ?? null,
-      metadata_json: event.metadata ?? null,
-      label: event.label ?? null,
-      source_endpoint: event.sourceEndpoint ?? null,
-      topic_primary: event.topicPrimary ?? null,
-      media_type: event.mediaType ?? null,
-      ai_action: event.aiAction ?? null,
-      ai_cached: event.aiCached ?? null,
-      ai_credits_used: event.aiCreditsUsed ?? null,
-      created_at: event.occurredAt
-    }));
+      cardsViewed: 0,
+      detailOpens: 0,
+      externalOpens: 0,
+      shares: 0,
+      saves: 0,
+      hides: 0,
+      aiActions: 0
+    };
 
-    const { data, error } = await getDB(env)
-      .from("user_events")
-      .upsert(rowsToInsert, { onConflict: "event_id", ignoreDuplicates: true })
-      .select("event_id");
+    if (event.eventType === "impression") current.cardsViewed += 1;
+    if (event.eventType === "detail_open") current.detailOpens += 1;
+    if (event.eventType === "external_open") current.externalOpens += 1;
+    if (event.eventType === "share") current.shares += 1;
+    if (event.eventType === "save") current.saves += 1;
+    if (event.eventType === "hide") current.hides += 1;
+    if (event.eventType.startsWith("ai_")) current.aiActions += 1;
 
-    if (error) {
-      throw error;
-    }
-
-    return { stored: data?.length ?? rowsToInsert.length };
+    aggregates.set(event.sessionId, current);
   }
+
+  const sessionIds = [...aggregates.keys()];
+  if (sessionIds.length === 0) return 0;
+
+  const { data: existingRows } = await getDB(env)
+    .from("user_sessions")
+    .select("session_id, user_id, surface, started_at, cards_viewed, detail_opens, external_opens, shares, saves, hides, ai_actions")
+    .in("session_id", sessionIds);
+
+  const existingById = new Map((existingRows ?? []).map((row) => [row.session_id, row]));
+  const updatedAt = new Date().toISOString();
+  const rows = sessionIds.map((sessionId) => {
+    const aggregate = aggregates.get(sessionId);
+    const existing = existingById.get(sessionId);
+    const row = {
+      session_id: sessionId,
+      user_id: existing?.user_id ?? userId,
+      surface: existing?.surface ?? aggregate.surface,
+      ended_at: updatedAt,
+      cards_viewed: Number(existing?.cards_viewed ?? 0) + aggregate.cardsViewed,
+      detail_opens: Number(existing?.detail_opens ?? 0) + aggregate.detailOpens,
+      external_opens: Number(existing?.external_opens ?? 0) + aggregate.externalOpens,
+      shares: Number(existing?.shares ?? 0) + aggregate.shares,
+      saves: Number(existing?.saves ?? 0) + aggregate.saves,
+      hides: Number(existing?.hides ?? 0) + aggregate.hides,
+      ai_actions: Number(existing?.ai_actions ?? 0) + aggregate.aiActions
+    };
+    if (existing?.started_at) {
+      row.started_at = existing.started_at;
+    }
+    return row;
+  });
+
+  await getDB(env)
+    .from("user_sessions")
+    .upsert(rows, { onConflict: "session_id" });
+
+  return rows.length;
 }
 
 export async function enrichEventsWithStoryContext(env, events) {
@@ -310,12 +432,15 @@ export async function enrichEventsWithStoryContext(env, events) {
   return events.map((event) => {
     const story = byStoryId.get(event.storyId);
     let topicPrimary = event.topicPrimary ?? null;
+    let topics = event.topics ?? null;
     if (!topicPrimary && story?.topics) {
       try {
         const parsedTopics = typeof story.topics === "string" ? JSON.parse(story.topics) : story.topics;
         topicPrimary = Array.isArray(parsedTopics) ? parsedTopics[0] ?? null : null;
+        topics = Array.isArray(parsedTopics) ? parsedTopics : null;
       } catch {
         topicPrimary = null;
+        topics = null;
       }
     }
 
@@ -323,7 +448,8 @@ export async function enrichEventsWithStoryContext(env, events) {
       ...event,
       sourceEndpoint: event.sourceEndpoint ?? story?.source_endpoint ?? null,
       mediaType: event.mediaType ?? story?.media_type ?? null,
-      topicPrimary
+      topicPrimary,
+      topics
     };
   });
 }
@@ -498,17 +624,7 @@ export async function getRecommendationCandidates(env, limit = 200) {
 }
 
 export async function getSeenStoryIds(env, userId, days = 7) {
-  if (!hasDB(env)) return [];
-
-  const since = new Date(Date.now() - days * 86400000).toISOString();
-  const { data } = await getDB(env)
-    .from("user_events")
-    .select("story_id")
-    .eq("user_id", userId)
-    .eq("event_type", "impression")
-    .gte("created_at", since);
-
-  return [...new Set((data ?? []).map((r) => r.story_id))];
+  return querySeenStoryIds(env, userId, days);
 }
 
 // ── AI prompt configs ─────────────────────────────────────────────────────────
@@ -1364,7 +1480,7 @@ export async function updatePromptTestResultNotes(env, id, notes) {
 
 // ── RSS sources ───────────────────────────────────────────────────────────────
 
-export async function getRSSSources(env, { category = null, activeOnly = true } = {}) {
+export async function getRSSSources(env, { category = null, activeOnly = true, dueForFetch = false } = {}) {
   if (!hasDB(env)) return [];
 
   let query = getDB(env).from("rss_sources").select("*");
@@ -1372,7 +1488,8 @@ export async function getRSSSources(env, { category = null, activeOnly = true } 
   if (category) query = query.eq("category", category);
 
   const { data } = await query;
-  return rows(data);
+  const sources = rows(data);
+  return dueForFetch ? sources.filter((source) => isRSSSourceDueForFetch(source)) : sources;
 }
 
 export async function getRSSSourceById(env, id) {
@@ -1446,7 +1563,37 @@ export async function insertRSSItem(env, item) {
       published_at: item.publishedAt ?? null
     }, { onConflict: "source_id,guid", ignoreDuplicates: true });
 
+  if (error) {
+    log.warn({
+      event: "rss_item_insert_fail",
+      storyId: item.storyId,
+      sourceId: item.sourceId,
+      error: error.message
+    });
+  }
+
   return !error;
+}
+
+export async function getStoryContentMetadataByStoryId(env, storyId) {
+  if (!hasDB(env)) return null;
+
+  const { data } = await getDB(env)
+    .from("rss_items")
+    .select("url, canonical_url, rss_sources!inner(feed_url, tier)")
+    .eq("story_id", storyId)
+    .order("rss_sources(tier)", { ascending: true })
+    .order("ingested_at", { ascending: true })
+    .limit(1)
+    .maybeSingle();
+
+  if (!data) return null;
+
+  return {
+    url: data.url ?? null,
+    canonicalUrl: data.canonical_url ?? null,
+    feedUrl: data.rss_sources?.feed_url ?? null
+  };
 }
 
 export async function getRSSItemByStoryId(env, storyId) {
@@ -1455,7 +1602,7 @@ export async function getRSSItemByStoryId(env, storyId) {
   const [itemResult, countResult] = await Promise.all([
     getDB(env)
       .from("rss_items")
-      .select("*, rss_sources!inner(name, tier, reliability_score, language)")
+      .select("*, rss_sources!inner(name, tier, reliability_score, language, feed_url)")
       .eq("story_id", storyId)
       .order("rss_sources(tier)", { ascending: true })
       .order("ingested_at", { ascending: true })
@@ -1476,6 +1623,7 @@ export async function getRSSItemByStoryId(env, storyId) {
     sourceTier: r.rss_sources?.tier ?? 2,
     sourceReliability: r.rss_sources?.reliability_score ?? null,
     sourceLanguage: r.rss_sources?.language ?? "en",
+    feedUrl: r.rss_sources?.feed_url ?? null,
     sourceCount: countResult.count ?? 1
   };
 }
@@ -1599,40 +1747,7 @@ export async function getPublishedEntryForVelocitySync(env, storyId) {
 }
 
 export async function getStoryVelocityWindow(env, storyId, minutes) {
-  if (!hasDB(env)) return { imp: 0, eng: 0, saves: 0, skips: 0, completes: 0 };
-
-  let data = null;
-  try {
-    const result = await getDB(env).rpc("get_story_velocity_window", {
-      p_story_id: storyId,
-      p_minutes:  minutes
-    });
-    data = result.data ?? null;
-  } catch {
-    const since = new Date(Date.now() - minutes * 60 * 1000).toISOString();
-    const { data: rows } = await getDB(env)
-      .from("user_events")
-      .select("event_type")
-      .eq("story_id", storyId)
-      .gte("occurred_at", since);
-
-    const counts = { imp: 0, eng: 0, saves: 0, skips: 0, completes: 0, detailOpens: 0, shares: 0, hides: 0, aiActions: 0 };
-    for (const row of rows ?? []) {
-      const eventType = row.event_type;
-      if (eventType === "impression") counts.imp += 1;
-      if (["dwell", "complete", "vote", "save", "share", "detail_open", "external_open"].includes(eventType)) counts.eng += 1;
-      if (eventType === "save") counts.saves += 1;
-      if (eventType === "skip") counts.skips += 1;
-      if (eventType === "complete") counts.completes += 1;
-      if (eventType === "detail_open") counts.detailOpens += 1;
-      if (eventType === "share") counts.shares += 1;
-      if (eventType === "hide") counts.hides += 1;
-      if (eventType.startsWith("ai_")) counts.aiActions += 1;
-    }
-    data = [counts];
-  }
-
-  const r = data?.[0];
+  const r = await queryStoryVelocityWindow(env, storyId, minutes);
   return {
     imp:      Number(r?.imp      ?? 0),
     eng:      Number(r?.eng      ?? 0),
@@ -1648,20 +1763,39 @@ export async function getStoryVelocityWindow(env, storyId, minutes) {
 
 export async function updateStoryStats(env) {
   if (!hasDB(env)) return 0;
-  const { data } = await getDB(env).rpc("update_story_stats");
-  return data ?? 0;
+
+  const rows = await queryStoryStats(env, 90);
+  if (!rows.length) return 0;
+
+  const updates = rows
+    .map((row) => ({
+      story_id: Number.parseInt(row.story_id, 10),
+      impression_count: Number(row.impression_count ?? 0),
+      engagement_count: Number(row.engagement_count ?? 0)
+    }))
+    .filter((row) => Number.isInteger(row.story_id));
+
+  if (updates.length === 0) return 0;
+
+  await Promise.all(updates.map((row) => getDB(env)
+    .from("published_feed_entries")
+    .update({
+      impression_count: row.impression_count,
+      engagement_count: row.engagement_count
+    })
+    .eq("story_id", row.story_id)));
+
+  return updates.length;
 }
 
 export async function getActiveStoryIds(env, minutes = 120) {
-  if (!hasDB(env)) return [];
-  const { data } = await getDB(env).rpc("get_active_story_ids", { p_minutes: minutes });
-  return (data ?? []).map((r) => r.story_id);
+  return queryActiveStoryIds(env, minutes);
 }
 
 export async function cleanupOldUserEvents(env, days = 30) {
-  if (!hasDB(env)) return 0;
-  const { data } = await getDB(env).rpc("cleanup_old_user_events", { p_days: days });
-  return data ?? 0;
+  void env;
+  void days;
+  return 0;
 }
 
 export async function getUnenrichedStoryIds(env, limit = 50) {

@@ -3,6 +3,10 @@ import { fal } from "@fal-ai/client";
 import * as log from "./log.mjs";
 import { DEFAULT_MEDIA_TEMPLATE_SETTINGS, parsePromptSettings } from "./prompt-config.mjs";
 
+const FAL_MODEL_ALIASES = Object.freeze({
+  "flux-2-turbo": "fal-ai/flux-2/turbo"
+});
+
 function mapImageSize(value) {
   switch (value) {
     case "square":
@@ -19,6 +23,11 @@ function mapImageSize(value) {
 
 function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function normalizeFalModel(model, fallbackModel) {
+  const resolved = String(model ?? fallbackModel).replace(/^\/+/, "");
+  return FAL_MODEL_ALIASES[resolved] ?? resolved;
 }
 
 export function buildFalImageRequest(prompt, settings = {}) {
@@ -46,18 +55,18 @@ async function requestFalImage(env, { prompt, model, settings, storyId = null, a
         url: env.MEDIA_PLACEHOLDER_URL ?? null,
         requestId: "placeholder",
         provider: "fal",
-        model: model ?? "fal-ai/flux-2/turbo"
+        model: normalizeFalModel(model, "fal-ai/flux-2/turbo")
       };
     }
     return {
       status: "failed",
       errorText: "Missing FAL_API_KEY",
       provider: "fal",
-      model: model ?? "fal-ai/flux-2/turbo"
+      model: normalizeFalModel(model, "fal-ai/flux-2/turbo")
     };
   }
 
-  const resolvedModel = String(model ?? "fal-ai/flux-2/turbo").replace(/^\/+/, "");
+  const resolvedModel = normalizeFalModel(model, "fal-ai/flux-2/turbo");
   const response = await fetch(`https://fal.run/${resolvedModel}`, {
     method: "POST",
     headers: {
@@ -169,7 +178,7 @@ async function requestFalVideo(env, { prompt, model, settings }) {
     credentials: env.FAL_API_KEY
   });
 
-  const resolvedModel = model ?? "fal-ai/sora-2/text-to-video";
+  const resolvedModel = normalizeFalModel(model, "fal-ai/sora-2/text-to-video");
   const input = {
     prompt,
     ...DEFAULT_MEDIA_TEMPLATE_SETTINGS.video,

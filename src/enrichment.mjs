@@ -185,7 +185,7 @@ export function computeNoveltyScore(publishedAt) {
   return 1.0 - (0.9 * hoursAgo) / 48;
 }
 
-export async function enrichPublishedStory(env, storyId) {
+export async function enrichPublishedStory(env, storyId, { crawlMetadata = null } = {}) {
   if (!env?.SUPABASE_URL) return;
 
   const row = await getPublishedStoryForEnrichment(env, storyId);
@@ -195,7 +195,12 @@ export async function enrichPublishedStory(env, storyId) {
     return;
   }
 
-  const topics = extractTopicsKeyword("", row.extractedText ?? "");
+  const crawlTopics = Array.isArray(crawlMetadata?.topics)
+    ? crawlMetadata.topics.filter((topic) => typeof topic === "string" && topic.trim().length > 0).slice(0, 5)
+    : [];
+  const topics = crawlTopics.length > 0
+    ? crawlTopics
+    : extractTopicsKeyword("", row.extractedText ?? "");
   const noveltyScore = computeNoveltyScore(row.publishedAt);
   const entities = extractEntities("", row.extractedText ?? "");
   const articleLength = (row.extractedText ?? "").length || null;
@@ -206,7 +211,9 @@ export async function enrichPublishedStory(env, storyId) {
   const sourceReliability = rssItem?.sourceReliability ?? null;
   const hasAuthor         = Boolean(rssItem?.author);
   const sourceCount       = rssItem?.sourceCount ?? 1;
-  const language          = rssItem?.sourceLanguage ?? "en";
+  const language          = typeof crawlMetadata?.language === "string" && crawlMetadata.language.trim().length > 0
+    ? crawlMetadata.language.trim()
+    : (rssItem?.sourceLanguage ?? "en");
 
   const qualityScore = sourceReliability != null
     ? sourceReliability
@@ -251,17 +258,4 @@ export async function enrichPublishedStory(env, storyId) {
     sourceReliabilityScore: sourceReliability ?? 0.5,
     duplicateClusterSize: sourceCount
   }).catch(() => {});
-
-  if (env.MEDIA_QUEUE?.send && env.OPENAI_API_KEY) {
-    try {
-      await env.MEDIA_QUEUE.send({
-        type: "enrich_topics",
-        storyId,
-        title: row.title ?? "",
-        text: (row.extractedText ?? "").slice(0, 2000)
-      });
-    } catch (err) {
-      log.warn({ event: "enrich_llm_enqueue_fail", storyId, ...log.fmtError(err) });
-    }
-  }
 }

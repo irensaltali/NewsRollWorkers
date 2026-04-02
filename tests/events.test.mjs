@@ -130,6 +130,6 @@ test("events route returns 200 with valid auth and events", async () => {
   assert.equal(response.status, 200);
   const payload = await response.json();
   assert.equal(payload.ok, true);
-  assert.equal(payload.stored, 0); // storeEvents returns 0 without SUPABASE_URL
+  assert.equal(payload.stored, 0); // no Analytics Engine binding in this test env
   assert.equal(payload.rejected, 1);
 });

@@ -50,8 +50,8 @@ function buildRankQuery(env, limit) {
   ].join("\n");
 }
 
-function toNdjson(rows) {
-  return rows.map((row) => JSON.stringify(row)).join("\n");
+function buildInsertPayload(rows) {
+  return JSON.stringify({ data: rows });
 }
 
 /**
@@ -100,14 +100,14 @@ export async function upsertItem(env, item) {
       ai_action_rate_24h: item.aiActionRate24h ?? 0.0
     };
 
-    const url = `${SHAPED_BASE_URL}/v2/tables/${itemsTable(env)}/table_insert`;
+    const url = `${SHAPED_BASE_URL}/v2/tables/${itemsTable(env)}/insert`;
     const resp = await fetch(url, {
       method: "POST",
       headers: {
         ...shapedHeaders(env),
-        "Content-Type": "application/x-ndjson"
+        "Content-Type": "application/json"
       },
-      body: toNdjson([shapedItem])
+      body: buildInsertPayload([shapedItem])
     });
 
     if (!resp.ok) {
@@ -151,14 +151,14 @@ export async function trackEvents(env, userId, events) {
 
     if (interactions.length === 0) return { ok: true };
 
-    const url = `${SHAPED_BASE_URL}/v2/tables/${interactionsTable(env)}/table_insert`;
+    const url = `${SHAPED_BASE_URL}/v2/tables/${interactionsTable(env)}/insert`;
     const resp = await fetch(url, {
       method: "POST",
       headers: {
         ...shapedHeaders(env),
-        "Content-Type": "application/x-ndjson"
+        "Content-Type": "application/json"
       },
-      body: toNdjson(interactions)
+      body: buildInsertPayload(interactions)
     });
 
     if (!resp.ok) {

@@ -1,9 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { buildFalImageRequest, dailyMediaLimit, meetsMediaQualityGate, processMediaMessage } from "../src/media-pipeline.mjs";
-import { publicMediaUrlFor, MEDIA_DAILY_LIMIT_DEFAULT, MEDIA_MAX_QUEUE_RETRIES, MEDIA_MIN_SCORE_DEFAULT } from "../src/config.mjs";
+import { buildFalImageRequest, dailyMediaLimit, mediaPerRunLimit, meetsMediaQualityGate, needsMediaCrawl, processMediaMessage } from "../src/media-pipeline.mjs";
+import { publicMediaUrlFor, MEDIA_DAILY_LIMIT_DEFAULT, MEDIA_MAX_QUEUE_RETRIES, MEDIA_MIN_SCORE_DEFAULT, MEDIA_PER_RUN_LIMIT_DEFAULT } from "../src/config.mjs";
 import { cleanupStaleMedia } from "../src/db.mjs";
+import { mediaTemplateWithFallback } from "../src/prompt-config.mjs";
 
 test("FAL image request uses flux-2/turbo settings", () => {
   const payload = buildFalImageRequest("prompt");
@@ -14,6 +15,12 @@ test("FAL image request uses flux-2/turbo settings", () => {
   assert.equal(payload.guidance_scale, 2.5);
   assert.equal(payload.enable_safety_checker, true);
   assert.equal(payload.enable_prompt_expansion, true);
+});
+
+test("mediaTemplateWithFallback uses the canonical fal image model id", () => {
+  const template = mediaTemplateWithFallback(null, "image");
+
+  assert.equal(template.model, "fal-ai/flux-2/turbo");
 });
 
 test("publicMediaUrlFor prefers the explicit media host when configured", () => {
@@ -52,6 +59,24 @@ test("dailyMediaLimit defaults to 10 for staging without explicit var", () => {
 
 test("dailyMediaLimit falls back to default on invalid value", () => {
   assert.equal(dailyMediaLimit({ ENVIRONMENT: "production", MEDIA_DAILY_LIMIT: "abc" }), MEDIA_DAILY_LIMIT_DEFAULT);
+});
+
+test("mediaPerRunLimit returns default without env override", () => {
+  assert.equal(mediaPerRunLimit({}), MEDIA_PER_RUN_LIMIT_DEFAULT);
+});
+
+test("mediaPerRunLimit respects MEDIA_PER_RUN_LIMIT env var", () => {
+  assert.equal(mediaPerRunLimit({ MEDIA_PER_RUN_LIMIT: "7" }), 7);
+});
+
+test("mediaPerRunLimit falls back to default on invalid value", () => {
+  assert.equal(mediaPerRunLimit({ MEDIA_PER_RUN_LIMIT: "abc" }), MEDIA_PER_RUN_LIMIT_DEFAULT);
+});
+
+test("needsMediaCrawl only requests a crawl when the message has a URL and no cached text", () => {
+  assert.equal(needsMediaCrawl({ url: "https://example.com/story" }, { text: "" }), true);
+  assert.equal(needsMediaCrawl({ url: "https://example.com/story" }, { text: "Cached RSS summary" }), false);
+  assert.equal(needsMediaCrawl({ url: null }, { text: "" }), false);
 });
 
 // --- Dead-letter tests ---

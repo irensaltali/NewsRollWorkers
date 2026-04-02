@@ -1,0 +1,150 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+
+import {
+  storeReadableContent,
+  storeStoryExplanation,
+  storeStorySummary
+} from "../src/db.mjs";
+
+test("storeReadableContent persists source and feed URLs when provided", async () => {
+  const env = {
+    SUPABASE_URL: "https://example.supabase.co",
+    SUPABASE_SECRET_KEY: "service-role-test"
+  };
+
+  let storyContentBody = null;
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (input, init) => {
+    const url = typeof input === "string" ? input : input.url;
+    if (url.includes("/rest/v1/story_content")) {
+      storyContentBody = JSON.parse(init.body);
+      return new Response(JSON.stringify([storyContentBody]), {
+        status: 201,
+        headers: { "content-type": "application/json" }
+      });
+    }
+
+    throw new Error(`Unexpected fetch: ${url}`);
+  };
+
+  try {
+    await storeReadableContent(env, {
+      storyId: 123,
+      sourceKind: "rss",
+      extractedText: "Seeded RSS description",
+      sourceUrl: "https://example.com/source-story",
+      feedUrl: "https://example.com/feed.xml",
+      updatedAt: "2026-04-02T12:00:00Z"
+    });
+
+    assert.deepEqual(storyContentBody, {
+      story_id: 123,
+      source_kind: "rss",
+      extracted_text: "Seeded RSS description",
+      source_url: "https://example.com/source-story",
+      feed_url: "https://example.com/feed.xml",
+      updated_at: "2026-04-02T12:00:00Z"
+    });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("storeStorySummary fills missing source and feed URLs from rss metadata", async () => {
+  const env = {
+    SUPABASE_URL: "https://example.supabase.co",
+    SUPABASE_SECRET_KEY: "service-role-test"
+  };
+
+  let rssLookupCount = 0;
+  let storyContentBody = null;
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (input, init) => {
+    const url = typeof input === "string" ? input : input.url;
+    if (url.includes("/rest/v1/rss_items")) {
+      rssLookupCount += 1;
+      return new Response(JSON.stringify({
+        story_id: 456,
+        url: "https://example.com/original",
+        canonical_url: "https://example.com/canonical",
+        rss_sources: {
+          feed_url: "https://example.com/source-feed.xml"
+        }
+      }), {
+        status: 200,
+        headers: { "content-type": "application/json" }
+      });
+    }
+    if (url.includes("/rest/v1/story_content")) {
+      storyContentBody = JSON.parse(init.body);
+      return new Response(JSON.stringify([storyContentBody]), {
+        status: 201,
+        headers: { "content-type": "application/json" }
+      });
+    }
+
+    throw new Error(`Unexpected fetch: ${url}`);
+  };
+
+  try {
+    await storeStorySummary(env, {
+      storyId: 456,
+      summary: "• Bullet one",
+      updatedAt: "2026-04-02T12:05:00Z"
+    });
+
+    assert.equal(rssLookupCount, 1);
+    assert.deepEqual(storyContentBody, {
+      story_id: 456,
+      source_url: "https://example.com/canonical",
+      feed_url: "https://example.com/source-feed.xml",
+      summary: "• Bullet one",
+      updated_at: "2026-04-02T12:05:00Z"
+    });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("storeStoryExplanation persists a formatted explanation snapshot", async () => {
+  const env = {
+    SUPABASE_URL: "https://example.supabase.co",
+    SUPABASE_SECRET_KEY: "service-role-test"
+  };
+
+  let storyContentBody = null;
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (input, init) => {
+    const url = typeof input === "string" ? input : input.url;
+    if (url.includes("/rest/v1/story_content")) {
+      storyContentBody = JSON.parse(init.body);
+      return new Response(JSON.stringify([storyContentBody]), {
+        status: 201,
+        headers: { "content-type": "application/json" }
+      });
+    }
+
+    throw new Error(`Unexpected fetch: ${url}`);
+  };
+
+  try {
+    await storeStoryExplanation(env, {
+      storyId: 789,
+      sourceUrl: "https://example.com/explain-story",
+      feedUrl: "https://example.com/explain-feed.xml",
+      explanation: "Overview\n\nWhat happened:\nDetailed explanation body.",
+      updatedAt: "2026-04-02T12:10:00Z"
+    });
+
+    assert.deepEqual(storyContentBody, {
+      story_id: 789,
+      source_url: "https://example.com/explain-story",
+      feed_url: "https://example.com/explain-feed.xml",
+      explanation: "Overview\n\nWhat happened:\nDetailed explanation body.",
+      updated_at: "2026-04-02T12:10:00Z"
+    });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});

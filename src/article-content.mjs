@@ -15,7 +15,7 @@ export async function resolveArticleUrl(_env, _storyId, { url = null } = {}) {
   return normalizedUrl || null;
 }
 
-export async function resolveArticleContent(env, storyId, { title = "", text = "", url = null } = {}) {
+export async function resolveArticleContent(env, storyId, { title = "", text = "", url = null } = {}, { allowCrawl = true } = {}) {
   const numericStoryId = Number(storyId);
   const hasStoryId = Number.isInteger(numericStoryId) && numericStoryId > 0;
   const normalizedTitle = normalizeText(title);
@@ -24,7 +24,7 @@ export async function resolveArticleContent(env, storyId, { title = "", text = "
 
   log.info({ event: "resolve_article_start", storyId: numericStoryId, hasStoryId, hasText: !!normalizedText, hasUrl: !!normalizedUrl });
 
-  // Step 1: Check D1 cache
+  // Step 1: Check cached readable content
   if (hasStoryId) {
     const readableContent = await getReadableContent(env, numericStoryId);
     const cachedText = normalizeText(readableContent?.extractedText);
@@ -34,7 +34,8 @@ export async function resolveArticleContent(env, storyId, { title = "", text = "
         title: normalizedTitle,
         text: cachedText,
         url: normalizedUrl,
-        sourceKind: "cache"
+        sourceKind: "cache",
+        metadata: null
       };
     }
     log.info({ event: "resolve_article_cache_miss", storyId: numericStoryId });
@@ -47,13 +48,14 @@ export async function resolveArticleContent(env, storyId, { title = "", text = "
       title: normalizedTitle,
       text: normalizedText,
       url: normalizedUrl,
-      sourceKind: "provided"
+      sourceKind: "provided",
+      metadata: null
     };
   }
 
   // Step 3: Crawl the URL
   const resolvedUrl = normalizedUrl;
-  if (resolvedUrl) {
+  if (resolvedUrl && allowCrawl) {
     log.info({ event: "resolve_article_crawl_start", storyId: numericStoryId, url: resolvedUrl });
     const crawlResult = await crawlUrl(env, resolvedUrl, { storyId: numericStoryId });
     const crawledText = normalizeText(crawlResult.markdown);
@@ -63,15 +65,17 @@ export async function resolveArticleContent(env, storyId, { title = "", text = "
           storyId: numericStoryId,
           sourceKind: "crawl",
           extractedText: crawledText,
+          sourceUrl: resolvedUrl,
           updatedAt: now()
         });
       }
       log.info({ event: "resolve_article_hit", storyId: numericStoryId, sourceKind: "crawl", textLength: crawledText.length });
       return {
-        title: normalizedTitle,
+        title: crawlResult.metadata?.title || normalizedTitle,
         text: crawledText,
         url: resolvedUrl,
-        sourceKind: "crawl"
+        sourceKind: "crawl",
+        metadata: crawlResult.metadata ?? null
       };
     }
     log.warn({
@@ -88,6 +92,7 @@ export async function resolveArticleContent(env, storyId, { title = "", text = "
     title: normalizedTitle,
     text: "",
     url: normalizedUrl,
-    sourceKind: null
+    sourceKind: null,
+    metadata: null
   };
 }

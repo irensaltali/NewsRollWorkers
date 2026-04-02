@@ -7,12 +7,55 @@ const CRAWL_POLL_INITIAL_DELAY_MS = 1_000;
 const CRAWL_POLL_MAX_DELAY_MS = 30_000;
 const CRAWL_AI_POLL_DELAY_MS = 2_000;
 const DEFAULT_CRAWL_LIMIT = 1;
+const DEFAULT_CRAWL_DEPTH = 1;
 const DEFAULT_CRAWL_PURPOSES = ["ai-input"];
 const KEEP_READING_MARKERS = [
   "\nKeep reading...",
   "\nShow less",
   "\nRed"
 ];
+const ARTICLE_METADATA_PROMPT = [
+  "Extract structured article data from the crawled page.",
+  "Return:",
+  "1. The article title.",
+  "2. A concise headline summary in at most 3 sentences.",
+  "3. The detected article language as a short ISO-639-1 code when possible.",
+  "4. A clear AI-generated summary in the same language as the article.",
+  "5. A list of relevant lowercase topic keywords using snake_case when needed."
+].join(" ");
+const ARTICLE_METADATA_SCHEMA = Object.freeze({
+  name: "article_metadata",
+  schema: {
+    type: "object",
+    additionalProperties: false,
+    properties: {
+      title: {
+        type: "string",
+        description: "Title of the article"
+      },
+      headline: {
+        type: "string",
+        description: "Concise headline summary in at most 3 sentences"
+      },
+      language: {
+        type: "string",
+        description: "Detected article language as a short ISO-639-1 code such as en, tr, or fr"
+      },
+      summary: {
+        type: "string",
+        description: "AI-generated summary in the same language as the article"
+      },
+      topics: {
+        type: "array",
+        description: "Relevant lowercase topic keywords",
+        items: { type: "string" },
+        minItems: 1,
+        maxItems: 8
+      }
+    },
+    required: ["title", "headline", "language", "summary", "topics"]
+  }
+});
 
 function normalizeEnvString(value) {
   return typeof value === "string" ? value.trim() : "";
@@ -65,10 +108,92 @@ function normalizeCrawlLimit(value) {
   return Number.isFinite(numeric) && numeric >= 1 ? numeric : DEFAULT_CRAWL_LIMIT;
 }
 
-export function buildCrawlRequest(url, { limit = DEFAULT_CRAWL_LIMIT, jsonOptions = null } = {}) {
+function normalizeCrawlDepth(value) {
+  const numeric = Math.floor(Number(value));
+  return Number.isFinite(numeric) && numeric >= 1 ? numeric : DEFAULT_CRAWL_DEPTH;
+}
+
+export function buildArticleMetadataJsonOptions() {
+  return {
+    prompt: ARTICLE_METADATA_PROMPT,
+    response_format: {
+      type: "json_schema",
+      json_schema: ARTICLE_METADATA_SCHEMA
+    }
+  };
+}
+
+function sanitizeMetadataString(value, maxLength) {
+  if (typeof value !== "string") {
+    return null;
+  }
+
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return null;
+  }
+
+  return trimmed.slice(0, maxLength);
+}
+
+function normalizeMetadataLanguage(value) {
+  const normalized = sanitizeMetadataString(value, 16);
+  if (!normalized) {
+    return null;
+  }
+
+  return normalized.toLowerCase();
+}
+
+function normalizeMetadataTopic(value) {
+  if (typeof value !== "string") {
+    return null;
+  }
+
+  const normalized = value
+    .trim()
+    .toLowerCase()
+    .replace(/[\s-]+/g, "_")
+    .replace(/[^a-z0-9_]/g, "")
+    .replace(/_+/g, "_")
+    .replace(/^_+|_+$/g, "");
+
+  return normalized || null;
+}
+
+export function normalizeArticleMetadata(value) {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+
+  const topics = Array.isArray(value.topics)
+    ? [...new Set(value.topics.map(normalizeMetadataTopic).filter(Boolean))].slice(0, 8)
+    : [];
+
+  const metadata = {
+    title: sanitizeMetadataString(value.title, 500),
+    headline: sanitizeMetadataString(value.headline, 500),
+    language: normalizeMetadataLanguage(value.language),
+    summary: sanitizeMetadataString(value.summary, 4000),
+    topics
+  };
+
+  if (!metadata.title && !metadata.headline && !metadata.language && !metadata.summary && metadata.topics.length === 0) {
+    return null;
+  }
+
+  return metadata;
+}
+
+export function buildCrawlRequest(url, options = {}) {
+  const hasExplicitJsonOptions = Object.prototype.hasOwnProperty.call(options, "jsonOptions");
+  const jsonOptions = hasExplicitJsonOptions ? options.jsonOptions : buildArticleMetadataJsonOptions();
+  const limit = options.limit ?? DEFAULT_CRAWL_LIMIT;
+  const depth = options.depth ?? DEFAULT_CRAWL_DEPTH;
   const request = {
     url,
     limit: normalizeCrawlLimit(limit),
+    depth: normalizeCrawlDepth(depth),
     crawlPurposes: DEFAULT_CRAWL_PURPOSES,
     formats: jsonOptions ? ["json", "markdown"] : ["markdown"],
   };
@@ -388,6 +513,19 @@ export async function crawlUrl(env, url, { storyId = null, limit = DEFAULT_CRAWL
       return { markdown: null, success: false, error };
     }
 
+    const { json, error: jsonError } = readCrawlJson(result, url);
+    const metadata = normalizeArticleMetadata(json);
+    if (json && !metadata) {
+      log.warn({
+        event: "crawl_metadata_invalid",
+        url,
+        jobId,
+        detail: JSON.stringify(json).slice(0, 300)
+      });
+    } else if (jsonError) {
+      log.info({ event: "crawl_metadata_missing", url, jobId, error: jsonError });
+    }
+
     let rawJsonKey = null;
     if (truncated) {
       try {
@@ -406,8 +544,14 @@ export async function crawlUrl(env, url, { storyId = null, limit = DEFAULT_CRAWL
       }
     }
 
-    log.info({ event: "crawl_success", url, jobId, markdownLength: markdown.length });
-    return { markdown, success: true, rawJsonKey };
+    log.info({
+      event: "crawl_success",
+      url,
+      jobId,
+      markdownLength: markdown.length,
+      hasMetadata: Boolean(metadata)
+    });
+    return { markdown, metadata, success: true, rawJsonKey };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     log.error({ event: "crawl_error", url, error: message });

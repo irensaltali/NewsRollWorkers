@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import worker from "../src/index.mjs";
-import { signTestJWT, TEST_JWT_SECRET, TEST_USER_ID } from "./test-auth.mjs";
+import { createES256TestJWT, signTestJWT, TEST_JWT_SECRET, TEST_USER_ID } from "./test-auth.mjs";
 
 function createKvNamespace(initialValue = null) {
   let value = initialValue;
@@ -233,6 +233,43 @@ test("for-you cold-start fallback paginates fixture-style rows", async () => {
   assert.equal(firstPayload.items.length, 0); // no DB without SUPABASE_URL
 });
 
+test("protected routes accept ES256 Supabase JWTs via JWKS", async () => {
+  const supabaseUrl = "https://snazihvdznshybaogwrx.supabase.co";
+  const { token, jwks } = createES256TestJWT(TEST_USER_ID, { supabaseUrl });
+
+  const response = await withMockedFetch([
+    {
+      matchEnd: "/auth/v1/.well-known/jwks.json",
+      body: jwks
+    }
+  ], async () => worker.fetch(
+    new Request("https://example.com/v1/events", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${token}`
+      },
+      body: JSON.stringify({
+        events: [
+          {
+            storyId: 123,
+            eventType: "impression",
+            surface: "test"
+          }
+        ]
+      })
+    }),
+    {
+      ...env,
+      SUPABASE_URL: supabaseUrl
+    }
+  ));
+
+  assert.equal(response.status, 200);
+  const payload = await response.json();
+  assert.equal(payload.ok, true);
+});
+
 test("endpoint-scoped visual feed routes are removed", async () => {
   const response = await worker.fetch(
     new Request("https://example.com/v1/visual-feed/front"),
@@ -250,4 +287,3 @@ test("worker does not proxy public story reads for the app", async () => {
 
   assert.equal(response.status, 404);
 });
-

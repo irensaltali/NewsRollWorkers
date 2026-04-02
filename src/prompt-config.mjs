@@ -177,7 +177,7 @@ export function mediaTemplateWithFallback(template, modality = "image") {
     active: 1,
     modality,
     provider: modality === "video" ? "fal" : "fal",
-    model: modality === "video" ? "fal-ai/sora-2/text-to-video" : "flux-2-turbo",
+    model: modality === "video" ? "fal-ai/sora-2/text-to-video" : "fal-ai/flux-2/turbo",
     settings: clone(fallbackSettings)
   };
 }

@@ -1,6 +1,7 @@
 import {
   storeStory,
   storeHeadline,
+  storeStorySummary,
   createPromptRunEvent,
   upsertMedia,
   updatePublishedFeedEntryMediaProjection,
@@ -8,11 +9,11 @@ import {
   reserveMediaQueueSlot,
   releaseMediaQueueSlot
 } from "./db.mjs";
-import { generateHeadline } from "./summary.mjs";
 import {
   publicMediaUrlFor,
   MEDIA_MAX_QUEUE_RETRIES,
   MEDIA_DAILY_LIMIT_DEFAULT,
+  MEDIA_PER_RUN_LIMIT_DEFAULT,
   MEDIA_MIN_SCORE_DEFAULT
 } from "./config.mjs";
 import { resolveArticleContent } from "./article-content.mjs";
@@ -45,10 +46,23 @@ export function dailyMediaLimit(env) {
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : MEDIA_DAILY_LIMIT_DEFAULT;
 }
 
+export function mediaPerRunLimit(env) {
+  const parsed = Number.parseInt(env?.MEDIA_PER_RUN_LIMIT ?? "", 10);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : MEDIA_PER_RUN_LIMIT_DEFAULT;
+}
+
 export function meetsMediaQualityGate(env, _category, story) {
   const minScore = Number.parseInt(env?.MEDIA_MIN_SCORE ?? "", 10);
   const threshold = Number.isFinite(minScore) && minScore >= 0 ? minScore : MEDIA_MIN_SCORE_DEFAULT;
   return (story.score ?? 0) >= threshold;
+}
+
+export function needsMediaCrawl(messageBody, resolvedArticle) {
+  return Boolean(messageBody?.url) && !normalizeResolvedText(resolvedArticle?.text);
+}
+
+function normalizeResolvedText(value) {
+  return typeof value === "string" ? value.trim() : "";
 }
 
 async function enqueueStoryForMedia(env, endpoint, story) {
@@ -78,8 +92,8 @@ async function enqueueStoryForMedia(env, endpoint, story) {
   }
 }
 
-export async function ingestStories(env, category) {
-  await ingestCategory(env, category);
+export async function ingestStories(env, category, options = {}) {
+  return ingestCategory(env, category, options);
 }
 
 function generatePrompt(template, payload) {
@@ -129,12 +143,25 @@ export async function processMediaMessage(batch, env) {
     try {
       const body = message.body;
       const now = new Date().toISOString();
-      const title = body.title ?? "Story";
       const fallbackText = `${body.title ?? ""} ${body.url ?? ""}`.trim() || "News story";
-      const resolvedArticle = await resolveArticleContent(env, storyId, {
+      let resolvedArticle = await resolveArticleContent(env, storyId, {
         title: body.title ?? "",
         url: body.url ?? null
+      }, {
+        allowCrawl: false
       });
+
+      if (needsMediaCrawl(body, resolvedArticle)) {
+        resolvedArticle = await resolveArticleContent(env, storyId, {
+          title: body.title ?? "",
+          url: body.url ?? null
+        });
+      }
+
+      const crawlMetadata = resolvedArticle.metadata && typeof resolvedArticle.metadata === "object"
+        ? resolvedArticle.metadata
+        : null;
+      const title = crawlMetadata?.title ?? body.title ?? "Story";
       const extractedText = resolvedArticle.text || fallbackText;
       const sourceKind = resolvedArticle.sourceKind ?? (body.url ? "article" : "hn_text");
       if (resolvedArticle.sourceKind === "crawl") {
@@ -149,16 +176,28 @@ export async function processMediaMessage(batch, env) {
 
       const contentHash = await hashText(extractedText);
 
-      let headline = null;
-      try {
-        const headlineResult = await generateHeadline(env, { storyId, title, extractedText });
-        headline = headlineResult.headline;
-        if (headline) {
-          await storeHeadline(env, body.storyId, headline, headlineResult.prompt);
-          log.info({ event: "headline_ok", storyId, chars: headline.length });
+      const headline = crawlMetadata?.headline ?? null;
+      if (headline) {
+        try {
+          await storeHeadline(env, body.storyId, headline, null);
+          log.info({ event: "headline_ok", storyId, chars: headline.length, source: "crawl" });
+        } catch (err) {
+          log.warn({ event: "headline_store_fail", storyId, ...log.fmtError(err) });
         }
-      } catch (err) {
-        log.warn({ event: "headline_fail", storyId, ...log.fmtError(err) });
+      }
+
+      if (crawlMetadata?.summary) {
+        try {
+          await storeStorySummary(env, {
+            storyId: body.storyId,
+            sourceUrl: body.url ?? null,
+            summary: crawlMetadata.summary,
+            updatedAt: now
+          });
+          log.info({ event: "summary_store_ok", storyId, chars: crawlMetadata.summary.length, source: "crawl" });
+        } catch (err) {
+          log.warn({ event: "summary_store_fail", storyId, ...log.fmtError(err) });
+        }
       }
 
       const template = mediaTemplateWithFallback(
@@ -277,7 +316,7 @@ export async function processMediaMessage(batch, env) {
             promptTemplateName: template?.name ?? null
           }).catch(() => {});
           try {
-            await enrichPublishedStory(env, body.storyId);
+            await enrichPublishedStory(env, body.storyId, { crawlMetadata });
           } catch (enrichErr) {
             log.warn({ event: "enrich_after_publish_fail", storyId, ...log.fmtError(enrichErr) });
           }

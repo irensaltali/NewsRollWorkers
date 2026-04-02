@@ -1,6 +1,7 @@
 import * as log from "./log.mjs";
 import * as shaped from "./shaped.mjs";
-import { batchInsertEvents, enrichEventsWithStoryContext } from "./db.mjs";
+import { enrichEventsWithStoryContext, upsertUserSessionsFromEvents } from "./db.mjs";
+import { writeEventBatch } from "./event-analytics.mjs";
 
 export const VALID_EVENT_TYPES = new Set([
   "impression",
@@ -148,18 +149,17 @@ export function validateEventBatch(events) {
 }
 
 export async function storeEvents(env, userId, events) {
-  if (!env?.SUPABASE_URL || events.length === 0) {
+  if (events.length === 0) {
     return { stored: 0 };
   }
 
   const enrichedEvents = await enrichEventsWithStoryContext(env, events);
-  const { stored } = await batchInsertEvents(env, userId, enrichedEvents);
+  await upsertUserSessionsFromEvents(env, userId, enrichedEvents);
+  const { stored } = await writeEventBatch(env, userId, enrichedEvents);
 
   log.info({ event: "events_stored", userId, submitted: events.length, stored });
 
-  if (stored > 0) {
-    shaped.trackEvents(env, userId, enrichedEvents).catch(() => {});
-  }
+  shaped.trackEvents(env, userId, enrichedEvents).catch(() => {});
 
   return { stored };
 }

@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { buildCrawlRequest, crawlUrl, readCrawlMarkdown } from "../src/browser-rendering.mjs";
+import { buildArticleMetadataJsonOptions, buildCrawlRequest, crawlUrl, normalizeArticleMetadata, readCrawlMarkdown } from "../src/browser-rendering.mjs";
 import mediaWorker from "../workers/media/index.mjs";
 import { buildHeadlineRequest } from "../src/summary.mjs";
 
@@ -36,20 +36,53 @@ test("headline request uses chat completions token field", async () => {
 });
 
 test("crawl request uses Cloudflare crawl endpoint parameters", () => {
-  assert.deepEqual(buildCrawlRequest("https://example.com/article"), {
-    url: "https://example.com/article",
-    limit: 1,
-    crawlPurposes: ["ai-input"],
-    formats: ["markdown"],
-  });
+  const request = buildCrawlRequest("https://example.com/article");
+
+  assert.equal(request.url, "https://example.com/article");
+  assert.equal(request.limit, 1);
+  assert.equal(request.depth, 1);
+  assert.deepEqual(request.crawlPurposes, ["ai-input"]);
+  assert.deepEqual(request.formats, ["json", "markdown"]);
+  assert.equal(request.jsonOptions?.prompt?.includes("Extract structured article data"), true);
+  assert.equal(request.jsonOptions?.response_format?.json_schema?.name, "article_metadata");
 });
 
 test("crawl request accepts a caller-provided limit when valid", () => {
-  assert.deepEqual(buildCrawlRequest("https://example.com/article", { limit: 3 }), {
-    url: "https://example.com/article",
-    limit: 3,
-    crawlPurposes: ["ai-input"],
-    formats: ["markdown"],
+  const request = buildCrawlRequest("https://example.com/article", { limit: 3, jsonOptions: null });
+
+  assert.equal(request.url, "https://example.com/article");
+  assert.equal(request.limit, 3);
+  assert.equal(request.depth, 1);
+  assert.deepEqual(request.crawlPurposes, ["ai-input"]);
+  assert.deepEqual(request.formats, ["markdown"]);
+  assert.equal("jsonOptions" in request, false);
+});
+
+test("article metadata json options use the expected schema contract", () => {
+  const jsonOptions = buildArticleMetadataJsonOptions();
+
+  assert.equal(jsonOptions.response_format.type, "json_schema");
+  assert.equal(jsonOptions.response_format.json_schema.name, "article_metadata");
+  assert.equal(jsonOptions.response_format.json_schema.schema.additionalProperties, false);
+  assert.deepEqual(
+    jsonOptions.response_format.json_schema.schema.required,
+    ["title", "headline", "language", "summary", "topics"]
+  );
+});
+
+test("normalizeArticleMetadata trims and normalizes crawl metadata", () => {
+  assert.deepEqual(normalizeArticleMetadata({
+    title: "  Example Title  ",
+    headline: "  Three sentence summary.  ",
+    language: " EN ",
+    summary: "  Summary body.  ",
+    topics: ["AI", "data retention", "AI", "privacy-policy"]
+  }), {
+    title: "Example Title",
+    headline: "Three sentence summary.",
+    language: "en",
+    summary: "Summary body.",
+    topics: ["ai", "data_retention", "privacy_policy"]
   });
 });
 
@@ -138,6 +171,13 @@ test("crawlUrl submits and polls the Cloudflare crawl API", async (t) => {
               url: "https://example.com/article",
               status: "completed",
               markdown: "# Crawled\n\nStory body",
+              json: {
+                title: "Crawled title",
+                headline: "Crawled hook.",
+                language: "en",
+                summary: "Crawled summary.",
+                topics: ["energy", "oil_prices"]
+              },
               metadata: { status: 200 }
             }
           ]
@@ -159,15 +199,23 @@ test("crawlUrl submits and polls the Cloudflare crawl API", async (t) => {
 
   assert.equal(result.success, true);
   assert.equal(result.markdown, "# Crawled\n\nStory body");
+  assert.deepEqual(result.metadata, {
+    title: "Crawled title",
+    headline: "Crawled hook.",
+    language: "en",
+    summary: "Crawled summary.",
+    topics: ["energy", "oil_prices"]
+  });
   assert.equal(calls.length, 2);
   assert.equal(calls[0].init.method, "POST");
   assert.match(calls[0].url, /accounts\/account-123\/browser-rendering\/crawl$/);
-  assert.deepEqual(JSON.parse(calls[0].init.body), {
-    url: "https://example.com/article",
-    limit: 1,
-    crawlPurposes: ["ai-input"],
-    formats: ["markdown"],
-  });
+  const requestBody = JSON.parse(calls[0].init.body);
+  assert.equal(requestBody.url, "https://example.com/article");
+  assert.equal(requestBody.limit, 1);
+  assert.equal(requestBody.depth, 1);
+  assert.deepEqual(requestBody.crawlPurposes, ["ai-input"]);
+  assert.deepEqual(requestBody.formats, ["json", "markdown"]);
+  assert.equal(requestBody.jsonOptions?.response_format?.json_schema?.name, "article_metadata");
   assert.match(calls[1].url, /accounts\/account-123\/browser-rendering\/crawl\/job-123\?limit=1$/);
 });
 

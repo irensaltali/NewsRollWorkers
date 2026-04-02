@@ -1,5 +1,7 @@
 import * as log from "./log.mjs";
 import { createClient } from "@supabase/supabase-js";
+import { getSupabaseSecretKey } from "./db.mjs";
+import { queryProfileEvents, queryStaleProfileUsers } from "./event-analytics.mjs";
 
 const EVENT_WEIGHTS = {
   ai_summary_request: 0.6,
@@ -25,7 +27,7 @@ function decayFactor(daysAgo) {
 }
 
 function getDB(env) {
-  return createClient(env.SUPABASE_URL, env.SUPABASE_SERVICE_ROLE_KEY, {
+  return createClient(env.SUPABASE_URL, getSupabaseSecretKey(env), {
     auth: { persistSession: false }
   });
 }
@@ -44,19 +46,24 @@ export function computeProfileData(rows) {
     const createdAt = row.created_at ?? row.createdAt;
     const sourceEndpoint = row.source_endpoint ?? row.sourceEndpoint;
     const weight = Number(row.label ?? row.eventLabel ?? EVENT_WEIGHTS[eventType] ?? 0);
+    const eventCount = Math.max(1, Number(row.event_count ?? row.eventCount ?? 1));
     const daysAgo = (now - new Date(createdAt).getTime()) / (1000 * 60 * 60 * 24);
     const decay = decayFactor(daysAgo);
-    const effectiveWeight = weight * decay;
+    const effectiveWeight = weight * decay * eventCount;
 
     if (eventType === "impression") {
-      totalImpressions++;
+      totalImpressions += eventCount;
     } else if (weight > 0) {
-      totalEngagements++;
+      totalEngagements += eventCount;
     }
 
     const topics = Array.isArray(row.topics)
       ? row.topics
-      : (typeof row.topics === "string" ? JSON.parse(row.topics) : (row.topic_primary ? [row.topic_primary] : []));
+      : (typeof row.topics === "string"
+          ? JSON.parse(row.topics)
+          : (typeof row.topics_json === "string" && row.topics_json
+              ? JSON.parse(row.topics_json)
+              : (row.topic_primary ? [row.topic_primary] : [])));
 
     for (const topic of topics) {
       topicScores[topic] = (topicScores[topic] ?? 0) + effectiveWeight;
@@ -81,42 +88,9 @@ export function computeProfileData(rows) {
 }
 
 export async function aggregateProfile(env, userId) {
-  if (!env?.SUPABASE_URL) return null;
+  if (!env?.SUPABASE_URL || !getSupabaseSecretKey(env)) return null;
 
-  let rows = [];
-  try {
-    const { data } = await getDB(env).rpc("get_profile_events", {
-      p_user_id: userId,
-      p_days: 30
-    });
-    rows = data ?? [];
-  } catch {
-    const since = new Date(Date.now() - 30 * 86400000).toISOString();
-    const { data: events } = await getDB(env)
-      .from("user_events")
-      .select("story_id, event_type, label, source_endpoint, topic_primary, occurred_at, created_at")
-      .eq("user_id", userId)
-      .gte("occurred_at", since);
-
-    const storyIds = [...new Set((events ?? []).map((event) => event.story_id).filter(Boolean))];
-    let topicsByStoryId = new Map();
-    if (storyIds.length > 0) {
-      const { data: stories } = await getDB(env)
-        .from("published_feed_entries")
-        .select("story_id, topics, source_endpoint")
-        .in("story_id", storyIds);
-      topicsByStoryId = new Map((stories ?? []).map((story) => [story.story_id, story]));
-    }
-
-    rows = (events ?? []).map((event) => {
-      const story = topicsByStoryId.get(event.story_id);
-      return {
-        ...event,
-        topics: story?.topics ?? null,
-        source_endpoint: event.source_endpoint ?? story?.source_endpoint ?? null
-      };
-    });
-  }
+  const rows = await queryProfileEvents(env, userId, 30);
 
   if (rows.length === 0) {
     log.debug({ event: "aggregate_skip", userId, reason: "no_events" });
@@ -150,10 +124,9 @@ export async function aggregateProfile(env, userId) {
 }
 
 export async function aggregateStaleProfiles(env, limit = 100) {
-  if (!env?.SUPABASE_URL) return 0;
+  if (!env?.SUPABASE_URL || !getSupabaseSecretKey(env)) return 0;
 
-  const { data } = await getDB(env).rpc("get_stale_profile_users", { p_limit: limit });
-  const userIds = (data ?? []).map((r) => r.user_id);
+  const userIds = await queryStaleProfileUsers(env, limit);
   let aggregated = 0;
 
   for (const userId of userIds) {

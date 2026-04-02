@@ -128,8 +128,9 @@ export function computeRSSQualityScore(item, source) {
   const recency =
     hoursAgo <= 0 ? 1.0 : hoursAgo >= 48 ? 0.1 : 1.0 - (0.9 * hoursAgo) / 48;
   const tierScore = source.tier === 1 ? 1.0 : source.tier === 3 ? 0.33 : 0.67;
+  const reliabilityScore = source.reliabilityScore ?? source.reliability_score ?? 0.5;
   return (
-    0.4 * (source.reliability_score ?? 0.5) +
+    0.4 * reliabilityScore +
     0.3 * tierScore +
     0.3 * recency
   );
@@ -144,12 +145,21 @@ function rssMediaDailyLimit(env) {
   return Number.isFinite(n) && n >= 0 ? n : 50;
 }
 
+function normalizeRemainingQueueBudget(value) {
+  if (value == null) {
+    return Number.POSITIVE_INFINITY;
+  }
+
+  const numeric = Number.parseInt(value, 10);
+  return Number.isFinite(numeric) && numeric >= 0 ? numeric : Number.POSITIVE_INFINITY;
+}
+
 // ── Core ingestion ────────────────────────────────────────────────────────────
 
-export async function ingestSource(env, source) {
+export async function ingestSource(env, source, { remainingQueueBudget = Number.POSITIVE_INFINITY } = {}) {
   let items;
   try {
-    items = await fetchAndParseRSS(source.feed_url);
+    items = await fetchAndParseRSS(source.feedUrl ?? source.feed_url);
   } catch (err) {
     log.warn({
       event: "rss_fetch_fail",
@@ -171,8 +181,19 @@ export async function ingestSource(env, source) {
   let stored = 0;
   let queued = 0;
   const dailyLimit = rssMediaDailyLimit(env);
+  const queueBudget = normalizeRemainingQueueBudget(remainingQueueBudget);
 
   for (let rank = 0; rank < items.length; rank++) {
+    if (queued >= queueBudget) {
+      log.info({
+        event: "rss_media_run_limit_reached",
+        sourceId: source.id,
+        name: source.name,
+        queueBudget
+      });
+      break;
+    }
+
     const item = items[rank];
     if (!item.url || !item.title) continue;
 
@@ -209,6 +230,8 @@ export async function ingestSource(env, source) {
           storyId,
           sourceKind: "rss",
           extractedText: item.description,
+          sourceUrl: canonicalUrl,
+          feedUrl: source.feedUrl ?? source.feed_url ?? null,
           updatedAt: new Date().toISOString()
         });
       }
@@ -271,7 +294,7 @@ export async function ingestSource(env, source) {
   return { fetched: items.length, stored, queued };
 }
 
-export async function ingestCategory(env, category) {
+export async function ingestCategory(env, category, options = {}) {
   const sources = await getRSSSources(env, {
     category,
     activeOnly: true,
@@ -283,9 +306,21 @@ export async function ingestCategory(env, category) {
   let totalFetched = 0;
   let totalStored = 0;
   let totalQueued = 0;
+  const queueBudget = normalizeRemainingQueueBudget(options.remainingQueueBudget);
 
   for (const source of sources) {
-    const result = await ingestSource(env, source);
+    if (totalQueued >= queueBudget) {
+      log.info({
+        event: "rss_category_media_run_limit_reached",
+        category,
+        queueBudget
+      });
+      break;
+    }
+
+    const result = await ingestSource(env, source, {
+      remainingQueueBudget: queueBudget - totalQueued
+    });
     totalFetched += result.fetched;
     totalStored += result.stored;
     totalQueued += result.queued;

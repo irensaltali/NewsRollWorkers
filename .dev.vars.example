@@ -1,5 +1,5 @@
 SUPABASE_URL=https://snazihvdznshybaogwrx.supabase.co
-SUPABASE_SERVICE_ROLE_KEY=replace-me
+SUPABASE_SECRET_KEY=replace-me
 SUPABASE_JWT_SECRET=replace-me
 FAL_API_KEY=replace-me
 PUBLIC_BASE_URL=https://example.com
