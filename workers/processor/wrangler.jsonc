@@ -28,12 +28,6 @@
 		"PUBLIC_MEDIA_BASE_URL": "https://media.newsroll.app",
 		"SUPABASE_URL": "https://snazihvdznshybaogwrx.supabase.co"
 	},
-	"routes": [
-		{
-			"pattern": "media.newsroll.app",
-			"custom_domain": true
-		}
-	],
 	"durable_objects": {
 		"bindings": [
 			{
@@ -79,12 +73,6 @@
 				"PUBLIC_MEDIA_BASE_URL": "https://media-staging.newsroll.app",
 				"SUPABASE_URL": "https://snazihvdznshybaogwrx.supabase.co"
 			},
-			"routes": [
-				{
-					"pattern": "media-staging.newsroll.app",
-					"custom_domain": true
-				}
-			],
 			"durable_objects": {
 				"bindings": [
 					{
