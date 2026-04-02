@@ -2,7 +2,6 @@ name: newsroll_interactions
 schema_type: CUSTOM
 unique_keys:
   - event_id
-datetime_key: created_at
 column_schema:
   event_id: String
   user_id: String

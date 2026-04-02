@@ -120,8 +120,8 @@ export async function queryStoryStats(env, days = 90) {
     return await queryEventAnalytics(env, `
       SELECT
         blob2 AS story_id,
-        SUM(CASE WHEN blob3 = 'impression' THEN _sample_interval ELSE 0 END) AS impression_count,
-        SUM(CASE WHEN blob3 IN ('dwell', 'complete', 'vote', 'save', 'share', 'detail_open', 'external_open') THEN _sample_interval ELSE 0 END) AS engagement_count
+        sumIf(_sample_interval, blob3 = 'impression') AS impression_count,
+        sumIf(_sample_interval, blob3 = 'dwell' OR blob3 = 'complete' OR blob3 = 'vote' OR blob3 = 'save' OR blob3 = 'share' OR blob3 = 'detail_open' OR blob3 = 'external_open') AS engagement_count
       FROM ${eventAnalyticsTable(env)}
       WHERE timestamp > NOW() - INTERVAL '${Math.max(1, days)}' DAY
       GROUP BY story_id

@@ -2,7 +2,6 @@ name: newsroll_items
 schema_type: CUSTOM
 unique_keys:
   - item_id
-datetime_key: updated_at
 column_schema:
   item_id: String
   created_at: DateTime
