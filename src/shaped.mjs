@@ -1,7 +1,6 @@
 import * as log from "./log.mjs";
 
 const SHAPED_BASE_URL = "https://api.shaped.ai";
-const DEFAULT_ENGINE_NAME = "newsroll_visual_v1";
 const DEFAULT_ITEMS_TABLE = "newsroll_items";
 const DEFAULT_INTERACTIONS_TABLE = "newsroll_interactions";
 
@@ -15,10 +14,6 @@ function shapedHeaders(env) {
   };
 }
 
-function engineName(env) {
-  return env?.SHAPED_ENGINE_NAME ?? DEFAULT_ENGINE_NAME;
-}
-
 function itemsTable(env) {
   return env?.SHAPED_ITEMS_TABLE ?? DEFAULT_ITEMS_TABLE;
 }
@@ -27,23 +22,6 @@ function interactionsTable(env) {
   return env?.SHAPED_INTERACTIONS_TABLE ?? DEFAULT_INTERACTIONS_TABLE;
 }
 
-function scoreExpression(env) {
-  return env?.SHAPED_SCORE_EXPRESSION ?? "click_through_rate";
-}
-
-function escapeShapedString(value) {
-  return String(value).replace(/'/g, "''");
-}
-
-function buildRankQuery(env, limit) {
-  const valueModel = escapeShapedString(scoreExpression(env));
-  return [
-    "SELECT *",
-    "FROM ids($candidate_item_ids)",
-    `ORDER BY score(expression='${valueModel}', input_user_id='$user_id')`,
-    `LIMIT ${Math.max(1, limit)}`
-  ].join("\n");
-}
 
 function buildInsertPayload(rows) {
   return JSON.stringify({ data: rows });
@@ -144,49 +122,3 @@ export async function trackEvents(env, userId, events) {
   }
 }
 
-/**
- * Ask Shaped to re-rank a set of candidate item IDs for a user.
- * Returns an ordered id[] or [] on timeout/error — caller falls back to local scoring.
- * Never throws.
- */
-export async function rankItems(env, userId, candidateIds, { timeoutMs = 800 } = {}) {
-  if (!isEnabled(env) || !candidateIds?.length) return [];
-  try {
-    const url = `${SHAPED_BASE_URL}/v2/engines/${engineName(env)}/query`;
-    const requestedLimit = Math.max(1, candidateIds.length);
-    const resp = await fetch(url, {
-      method: "POST",
-      headers: {
-        ...shapedHeaders(env),
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({
-        query: buildRankQuery(env, requestedLimit),
-        parameters: {
-          user_id: userId,
-          candidate_item_ids: candidateIds
-        }
-      }),
-      signal: AbortSignal.timeout(timeoutMs)
-    });
-
-    if (!resp.ok) {
-      const detail = await resp.text().catch(() => "");
-      log.warn({ event: "shaped_rank_fail", httpStatus: resp.status, detail: detail.slice(0, 200) });
-      return [];
-    }
-
-    const data = await resp.json();
-    const ranked = data?.results ?? data?.items ?? [];
-    if (!Array.isArray(ranked)) {
-      return [];
-    }
-    return ranked
-      .map((item) => item?.item_id ?? item?.id ?? item)
-      .filter(Boolean)
-      .map(String);
-  } catch (err) {
-    log.warn({ event: "shaped_rank_error", ...log.fmtError(err) });
-    return [];
-  }
-}

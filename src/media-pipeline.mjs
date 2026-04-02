@@ -7,7 +7,9 @@ import {
   updatePublishedFeedEntryMediaProjection,
   getRandomActivePromptTemplate,
   reserveMediaQueueSlot,
-  releaseMediaQueueSlot
+  releaseMediaQueueSlot,
+  getRSSSourceIdByStoryId,
+  setRSSSourceActive
 } from "./db.mjs";
 import {
   publicMediaUrlFor,
@@ -160,6 +162,32 @@ export async function processMediaMessage(batch, env) {
           title: body.title ?? "",
           url: body.url ?? null
         });
+      }
+
+      if (resolvedArticle.crawlError) {
+        const isPermanent = /robots\.txt|disallowed|4\d\d/i.test(resolvedArticle.crawlError);
+        if (isPermanent) {
+          log.warn({ event: "crawl_permanent_fail", storyId, url: body.url ?? null, error: resolvedArticle.crawlError });
+          await upsertMedia(env, {
+            storyId,
+            status: "skipped",
+            falRequestId: null,
+            mediaKey: null,
+            mediaUrl: null,
+            failureReason: `Crawl blocked: ${resolvedArticle.crawlError}`,
+            attempts: attempt + 1,
+            updatedAt: new Date().toISOString(),
+            promptTemplateId: null,
+            imagePrompt: null
+          });
+          const sourceId = await getRSSSourceIdByStoryId(env, storyId);
+          if (sourceId) {
+            await setRSSSourceActive(env, sourceId, false);
+            log.warn({ event: "rss_source_deactivated", storyId, sourceId, reason: "crawl_blocked" });
+          }
+          message.ack();
+          continue;
+        }
       }
 
       const crawlMetadata = resolvedArticle.metadata && typeof resolvedArticle.metadata === "object"

@@ -54,32 +54,6 @@ const TRANSLATION_SCHEMA = Object.freeze({
   }
 });
 
-const THREAD_INTELLIGENCE_SCHEMA = Object.freeze({
-  name: "thread_intelligence_response",
-  strict: true,
-  schema: {
-    type: "object",
-    properties: {
-      summary: {
-        type: "string",
-        description: "A concise summary of the overall comment thread"
-      },
-      keyInsights: {
-        type: "array",
-        description: "Three to five notable insights surfaced from the discussion",
-        items: { type: "string" }
-      },
-      discussionShape: {
-        type: "string",
-        description: "Overall shape of the discussion",
-        enum: ["heated", "consensus", "mixed"]
-      }
-    },
-    required: ["summary", "keyInsights", "discussionShape"],
-    additionalProperties: false
-  }
-});
-
 const EXPLAIN_SCHEMA = Object.freeze({
   name: "explain_response",
   strict: true,
@@ -155,14 +129,6 @@ export const AI_ACTIONS = Object.freeze({
     model: "o1-mini",
     maxTokens: 16000,
     cacheTtlMs: 3 * 24 * 60 * 60 * 1000
-  }),
-  thread_intelligence: Object.freeze({
-    key: "thread_intelligence",
-    cost: 8,
-    model: "o4-mini",
-    maxTokens: 3000,
-    cacheTtlMs: 3 * 24 * 60 * 60 * 1000,
-    schema: THREAD_INTELLIGENCE_SCHEMA
   }),
   explain_simple: Object.freeze({
     key: "explain_simple",

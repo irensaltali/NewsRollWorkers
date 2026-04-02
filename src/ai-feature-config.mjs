@@ -37,21 +37,6 @@ const AI_FEATURES = Object.freeze([
     cacheTtlSeconds: cacheTtlSecondsFor("translation")
   }),
   Object.freeze({
-    key: "thread_intelligence",
-    title: "Summarize Thread",
-    description: "Summarize the discussion and extract key thread insights.",
-    routePath: "/v1/ai/thread-intelligence",
-    promptKey: "thread_intelligence",
-    enabled: true,
-    requiresPro: true,
-    creditCost: AI_ACTIONS.thread_intelligence.cost,
-    usesStory: true,
-    usesArticleText: false,
-    usesComments: true,
-    usesTargetLanguage: false,
-    cacheTtlSeconds: cacheTtlSecondsFor("thread_intelligence")
-  }),
-  Object.freeze({
     key: "explain_simple",
     title: "Explain",
     description: "Explain the article in simple terms.",

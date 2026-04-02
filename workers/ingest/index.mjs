@@ -1,6 +1,5 @@
 import { ingestStories, mediaPerRunLimit } from "../../src/media-pipeline.mjs";
 import { FEED_CATEGORIES } from "../../src/config.mjs";
-import { aggregateStaleProfiles } from "../../src/profile-aggregator.mjs";
 import { updateStoryStats, cleanupOldEvents } from "../../src/stats-updater.mjs";
 import { cleanupStaleMedia } from "../../src/db.mjs";
 import * as log from "../../src/log.mjs";
@@ -32,12 +31,6 @@ export default {
           log.error({ event: "cron_category_fail", cron: controller.cron, category, ...log.fmtError(err) });
         }
       }
-    }
-
-    try {
-      await aggregateStaleProfiles(env, 100);
-    } catch (err) {
-      log.error({ event: "profile_aggregation_fail", ...log.fmtError(err) });
     }
 
     try {

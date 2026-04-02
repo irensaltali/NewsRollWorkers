@@ -16,19 +16,6 @@ function intEnv(value, fallback) {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }
 
-function boolEnv(value, fallback = false) {
-  const normalized = String(value ?? "").trim().toLowerCase();
-  if (!normalized) {
-    return fallback;
-  }
-  if (["1", "true", "yes", "on"].includes(normalized)) {
-    return true;
-  }
-  if (["0", "false", "no", "off"].includes(normalized)) {
-    return false;
-  }
-  return fallback;
-}
 
 function trimBaseUrl(value) {
   return value.replace(/\/+$/, "");
@@ -58,8 +45,6 @@ export function publicMediaUrlFor(env, mediaKey) {
   return `${publicApiBaseUrl(env)}/media/${normalizedKey}`;
 }
 
-export const FOR_YOU_MIN_EVENTS_DEFAULT = 10;
-
 export function buildAppConfig(env) {
   return {
     visualFeed: {
@@ -67,11 +52,6 @@ export function buildAppConfig(env) {
       path: "/v1/visual-feed",
       defaultPageSize: intEnv(env?.VISUAL_FEED_PAGE_SIZE_DEFAULT, VISUAL_FEED_PAGE_SIZE_DEFAULT),
       maxPageSize: intEnv(env?.VISUAL_FEED_PAGE_SIZE_MAX, VISUAL_FEED_PAGE_SIZE_MAX)
-    },
-    forYouFeed: {
-      enabled: boolEnv(env?.FOR_YOU_FEED_ENABLED),
-      path: "/v1/feed/for-you",
-      minEvents: intEnv(env?.FOR_YOU_MIN_EVENTS, FOR_YOU_MIN_EVENTS_DEFAULT)
     },
     supportsReadableMode: true,
     ai: {

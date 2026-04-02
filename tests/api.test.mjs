@@ -102,7 +102,6 @@ test("config treats false-like FOR_YOU_FEED_ENABLED values as disabled", async (
 
   assert.equal(response.status, 200);
   const payload = await response.json();
-  assert.equal(payload.forYouFeed.enabled, false);
   assert.equal(Array.isArray(payload.ai.features), true);
   assert.deepEqual(payload.ai.features.find((feature) => feature.key === "translation"), {
     key: "translation",
@@ -214,22 +213,6 @@ test("visual feed ignores stale cached snapshot rows that predate headline suppo
   const payload = await response.json();
   // Stale cache (no headline) is ignored; falls back to fixture feed
   assert.equal(payload.items[0].storyId, 43987539);
-});
-
-test("for-you cold-start fallback paginates fixture-style rows", async () => {
-  const token = signTestJWT(TEST_USER_ID, TEST_JWT_SECRET);
-
-  const firstPage = await worker.fetch(
-    new Request("https://example.com/v1/feed/for-you?limit=1", {
-      headers: { authorization: `Bearer ${token}` }
-    }),
-    env
-  );
-
-  assert.equal(firstPage.status, 200);
-  const firstPayload = await firstPage.json();
-  assert.equal(firstPayload.coldStart, true);
-  assert.equal(firstPayload.items.length, 0); // no DB without SUPABASE_URL
 });
 
 test("protected routes accept ES256 Supabase JWTs via JWKS", async () => {

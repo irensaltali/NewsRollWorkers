@@ -23,14 +23,12 @@ import {
   toVisualFeedItem
 } from "./visual-feed.mjs";
 import { validateEventBatch, storeEvents } from "./events.mjs";
-import { generateRecommendedFeed } from "./recommendation.mjs";
 import { processAIRequest, authorizeAIRequest, ensureAIRequestBalance, finalizeAIRequestCharge, CREDIT_COSTS } from "./credits.mjs";
 import {
   formatExplainResult,
   generateSummary,
   generateSummaryViaCrawl,
   generateStructuredTranslation,
-  generateThreadIntelligence,
   generateExplain,
   generateExplainViaCrawl,
   hasOpenAIConfig
@@ -158,60 +156,6 @@ function parseCachedTranslation(value) {
 
 function translationCacheExpiryIso() {
   return new Date(Date.now() + AI_ACTIONS.translation.cacheTtlMs).toISOString();
-}
-
-function normalizeThreadPayload(body) {
-  const storyId = Number(body.storyId);
-  const title = normalizeText(body.title);
-  const comments = normalizeStructuredComments(body.comments);
-  return { storyId, title, comments };
-}
-
-function threadIntelligenceHashSource(payload) {
-  return {
-    storyId: payload.storyId,
-    title: payload.title,
-    comments: payload.comments.map((comment) => ({
-      id: comment.id,
-      text: comment.text
-    }))
-  };
-}
-
-async function buildThreadIntelligencePayload(body) {
-  const source = normalizeThreadPayload(body);
-  const contentHash = await sha256Hex(sortedJson(threadIntelligenceHashSource(source)));
-  return {
-    ...source,
-    contentHash
-  };
-}
-
-function threadIntelligenceCacheKey(payload) {
-  return `thread_intelligence:v1:${payload.storyId}:${payload.contentHash}`;
-}
-
-function parseCachedThreadIntelligence(value) {
-  try {
-    const parsed = JSON.parse(value);
-    if (
-      typeof parsed?.summary !== "string" ||
-      !Array.isArray(parsed?.keyInsights) ||
-      typeof parsed?.discussionShape !== "string" ||
-      typeof parsed?.contentHash !== "string"
-    ) {
-      return null;
-    }
-
-    return {
-      summary: parsed.summary.trim(),
-      keyInsights: parsed.keyInsights.filter((item) => typeof item === "string" && item.trim().length > 0),
-      discussionShape: parsed.discussionShape,
-      contentHash: parsed.contentHash
-    };
-  } catch {
-    return null;
-  }
 }
 
 function explainContentHashSource(payload) {
@@ -570,7 +514,7 @@ async function handleReadableArticle(env, storyId) {
   });
 }
 
-async function handleEvents(request, env) {
+async function handleEvents(request, env, ctx) {
   const user = await requireUser(request, env);
   const userErr = guardUser(user);
   if (userErr) return userErr;
@@ -582,42 +526,9 @@ async function handleEvents(request, env) {
     return error("No valid events provided", 422, { rejected });
   }
 
-  const result = await storeEvents(env, user.userId, valid);
+  const result = await storeEvents(env, user.userId, valid, ctx);
   return json({ ok: true, stored: result.stored, rejected: rejected.length });
 }
-
-async function handleForYouFeed(request, env) {
-  const user = await userContext(request, env);
-  const userId = user?.userId ?? null;
-
-  const url = new URL(request.url);
-  const cursor = url.searchParams.get("cursor") || null;
-  const coldStartCursor = parseVisualFeedCursor(cursor);
-  const limit = Math.min(Math.max(parseInt(url.searchParams.get("limit") ?? "20", 10) || 20, 1), 50);
-
-  if (!userId || !env?.SUPABASE_URL) {
-    return json({ coldStart: true, items: [], nextCursor: null });
-  }
-
-  const result = await generateRecommendedFeed(env, userId, { cursor, limit });
-
-  if (result.coldStart) {
-    const items = await listPublishedVisualFeed(env, { cursor: coldStartCursor, limit });
-    const fallback = buildVisualFeedResponse(env, items, coldStartCursor, limit);
-    return json({
-      coldStart: true,
-      items: fallback.items,
-      nextCursor: fallback.nextCursor != null ? String(fallback.nextCursor) : null
-    });
-  }
-
-  return json({
-    coldStart: false,
-    items: (result.items ?? []).map((item) => toVisualFeedItem(env, item)),
-    nextCursor: result.nextCursor ?? null
-  });
-}
-
 
 async function handleAISummary(request, env) {
   const user = await requireUser(request, env);
@@ -860,28 +771,6 @@ async function handleAITranslate(request, env) {
   });
 }
 
-async function handleAIThreadIntelligence(request, env) {
-  return handleStructuredCachedAIRequest(request, env, {
-    actionKey: "thread_intelligence",
-    buildPayload: buildThreadIntelligencePayload,
-    validatePayload: (payload) => {
-      if (!payload.storyId) return "storyId is required";
-      if (!payload.title) return "title is required";
-      if (!payload.comments.length) return "comments are required";
-      return null;
-    },
-    cacheKeyFor: threadIntelligenceCacheKey,
-    parseCached: parseCachedThreadIntelligence,
-    generate: (payload) => generateThreadIntelligence(env, payload),
-    toResponsePayload: (payload, result) => ({
-      summary: result.summary,
-      keyInsights: result.keyInsights,
-      discussionShape: result.discussionShape,
-      contentHash: payload.contentHash
-    })
-  });
-}
-
 async function handleAIExplain(request, env) {
   const body = (await readJson(request.clone())) ?? {};
   const level = normalizeText(body.level).toLowerCase() === "simple" ? "simple" : "technical";
@@ -962,15 +851,13 @@ const ROUTES = [
   { method: "GET",   path: "/v1/config",             name: "config",           handler: handleConfig },
   { method: "GET",   path: "/v1/visual-feed",        name: "visual_feed",      handler: handleVisualFeed },
   { method: "POST",  path: "/v1/events",             name: "events",          handler: handleEvents },
-  { method: "GET",   path: "/v1/feed/for-you",        name: "feed_for_you",    handler: handleForYouFeed },
   { method: "POST",  path: "/v1/ai/summary",          name: "ai_summary",      handler: handleAISummary },
   { method: "POST",  path: "/v1/ai/translate",         name: "ai_translate",    handler: handleAITranslate },
-  { method: "POST",  path: "/v1/ai/thread-intelligence", name: "ai_thread_intelligence", handler: handleAIThreadIntelligence },
   { method: "POST",  path: "/v1/ai/explain",           name: "ai_explain",      handler: handleAIExplain },
   { method: "GET",   path: "/v1/credits",              name: "credits",         handler: handleGetCredits },
 ];
 
-async function routeRequest(request, env) {
+async function routeRequest(request, env, ctx) {
   const url = new URL(request.url);
   const segments = url.pathname.split("/").filter(Boolean);
 
@@ -980,7 +867,7 @@ async function routeRequest(request, env) {
 
   for (const route of ROUTES) {
     if (request.method === route.method && url.pathname === route.path) {
-      const response = await route.handler(request, env);
+      const response = await route.handler(request, env, ctx);
       return { response, route: route.name };
     }
   }
@@ -1023,12 +910,12 @@ async function responseLogFields(response) {
 }
 
 export default {
-  async fetch(request, env) {
+  async fetch(request, env, ctx) {
     const start = Date.now();
     const rid = log.requestId(request);
     const meta = log.requestMeta(request);
     try {
-      const { response, route } = await routeRequest(request, env);
+      const { response, route } = await routeRequest(request, env, ctx);
       const durationMs = Date.now() - start;
       const logFn = response.status >= 400 ? log.warn : log.info;
       logFn({

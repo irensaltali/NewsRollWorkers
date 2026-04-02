@@ -85,6 +85,15 @@ export async function resolveArticleContent(env, storyId, { title = "", text = "
       error: crawlResult.error ?? "unknown",
       rawJsonKey: crawlResult.rawJsonKey ?? null
     });
+    log.warn({ event: "resolve_article_empty", storyId: numericStoryId, url: normalizedUrl || null });
+    return {
+      title: normalizedTitle,
+      text: "",
+      url: normalizedUrl,
+      sourceKind: null,
+      metadata: null,
+      crawlError: crawlResult.error ?? "unknown"
+    };
   }
 
   log.warn({ event: "resolve_article_empty", storyId: numericStoryId, url: normalizedUrl || null });

@@ -42,28 +42,34 @@ export async function writeEventBatch(env, userId, events) {
     return { stored: 0 };
   }
 
-  for (const event of events) {
-    env.EVENT_ANALYTICS.writeDataPoint({
-      indexes: [String(userId)],
-      blobs: [
-        String(userId),
-        String(event.storyId),
-        event.eventType,
-        event.sessionId ?? "",
-        event.surface ?? "unknown",
-        event.feedMode ?? "",
-        event.mediaType ?? "",
-        event.sourceEndpoint ?? "",
-        event.aiAction ?? "",
-        event.eventId ?? ""
-      ],
-      doubles: [
-        1,
-        Number(event.label ?? 0),
-        Number(event.dwellMs ?? 0),
-        Number(event.aiCreditsUsed ?? 0)
-      ]
-    });
+  try {
+    for (const event of events) {
+      env.EVENT_ANALYTICS.writeDataPoint({
+        indexes: [String(userId)],
+        blobs: [
+          String(userId),
+          String(event.storyId),
+          event.eventType,
+          event.sessionId ?? "",
+          event.surface ?? "unknown",
+          event.feedMode ?? "",
+          event.mediaType ?? "",
+          event.sourceEndpoint ?? "",
+          event.aiAction ?? "",
+          event.eventId ?? ""
+        ],
+        doubles: [
+          1,
+          Number(event.label ?? 0),
+          Number(event.dwellMs ?? 0),
+          Number(event.aiCreditsUsed ?? 0)
+        ]
+      });
+    }
+    log.info({ event: "analytics_write_ok", userId, count: events.length });
+  } catch (err) {
+    log.warn({ event: "analytics_write_fail", userId, count: events.length, ...log.fmtError(err) });
+    return { stored: 0 };
   }
 
   return { stored: events.length };
@@ -91,28 +97,6 @@ export async function queryEventAnalytics(env, query) {
   return Array.isArray(payload?.data) ? payload.data : [];
 }
 
-export async function querySeenStoryIds(env, userId, days = 7) {
-  if (!hasEventAnalyticsQueryConfig(env)) return [];
-
-  try {
-    const rows = await queryEventAnalytics(env, `
-      SELECT blob2 AS story_id
-      FROM ${eventAnalyticsTable(env)}
-      WHERE blob1 = ${sqlString(userId)}
-        AND blob3 = 'impression'
-        AND timestamp > NOW() - INTERVAL '${Math.max(1, days)}' DAY
-      GROUP BY story_id
-    `);
-
-    return rows
-      .map((row) => Number.parseInt(row.story_id, 10))
-      .filter(Number.isInteger);
-  } catch (err) {
-    log.warn({ event: "event_analytics_query_fail", query: "seen_story_ids", userId, ...log.fmtError(err) });
-    return [];
-  }
-}
-
 export async function queryStoryStats(env, days = 90) {
   if (!hasEventAnalyticsQueryConfig(env)) return [];
 
@@ -132,46 +116,3 @@ export async function queryStoryStats(env, days = 90) {
   }
 }
 
-export async function queryProfileEvents(env, userId, days = 30) {
-  if (!hasEventAnalyticsQueryConfig(env)) return [];
-
-  try {
-    return await queryEventAnalytics(env, `
-      SELECT
-        blob3 AS event_type,
-        blob8 AS source_endpoint,
-        double2 AS label,
-        timestamp AS created_at
-      FROM ${eventAnalyticsTable(env)}
-      WHERE blob1 = ${sqlString(userId)}
-        AND timestamp > NOW() - INTERVAL '${Math.max(1, days)}' DAY
-      ORDER BY timestamp DESC
-      LIMIT 5000
-    `);
-  } catch (err) {
-    log.warn({ event: "event_analytics_query_fail", query: "profile_events", userId, ...log.fmtError(err) });
-    return [];
-  }
-}
-
-export async function queryStaleProfileUsers(env, limit = 100) {
-  if (!hasEventAnalyticsQueryConfig(env)) return [];
-
-  try {
-    const rows = await queryEventAnalytics(env, `
-      SELECT blob1 AS user_id, MAX(timestamp) AS last_event_at
-      FROM ${eventAnalyticsTable(env)}
-      WHERE timestamp > NOW() - INTERVAL '30' DAY
-      GROUP BY user_id
-      ORDER BY last_event_at DESC
-      LIMIT ${Math.max(1, Math.min(limit, 1000))}
-    `);
-
-    return rows
-      .map((row) => row.user_id)
-      .filter((value) => typeof value === "string" && value.length > 0);
-  } catch (err) {
-    log.warn({ event: "event_analytics_query_fail", query: "stale_profile_users", ...log.fmtError(err) });
-    return [];
-  }
-}

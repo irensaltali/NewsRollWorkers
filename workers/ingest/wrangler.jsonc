@@ -14,7 +14,6 @@
 		"APP_NAME": "NewsRoll Ingest",
 		"ENVIRONMENT": "production",
 		"CLOUDFLARE_ACCOUNT_ID": "ccbc9926d08a298aee2a4f0cffcfc4a3",
-		"EVENT_ANALYTICS_DATASET": "newsroll_user_events",
 		"PUBLIC_API_BASE_URL": "https://api.newsroll.app",
 		"PUBLIC_MEDIA_BASE_URL": "https://media.newsroll.app",
 		"MEDIA_DAILY_LIMIT": "50",
@@ -30,12 +29,6 @@
 			}
 		]
 	},
-	"analytics_engine_datasets": [
-		{
-			"binding": "EVENT_ANALYTICS",
-			"dataset": "newsroll_user_events"
-		}
-	],
 	"triggers": {
 		"crons": [
 			"*/5 * * * *"
@@ -53,7 +46,6 @@
 				"APP_NAME": "NewsRoll Ingest",
 				"ENVIRONMENT": "staging",
 				"CLOUDFLARE_ACCOUNT_ID": "ccbc9926d08a298aee2a4f0cffcfc4a3",
-				"EVENT_ANALYTICS_DATASET": "newsroll_user_events",
 				"PUBLIC_API_BASE_URL": "https://api-staging.newsroll.app",
 				"PUBLIC_MEDIA_BASE_URL": "https://media-staging.newsroll.app",
 				"MEDIA_DAILY_LIMIT": "10",
@@ -69,12 +61,6 @@
 					}
 				]
 			},
-			"analytics_engine_datasets": [
-				{
-					"binding": "EVENT_ANALYTICS",
-					"dataset": "newsroll_user_events"
-				}
-			],
 			"triggers": {
 				"crons": [
 					"*/5 * * * *"

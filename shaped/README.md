@@ -72,7 +72,6 @@ Interaction inserts should happen for:
 - `ai_summary_request`
 - `ai_explain_request`
 - `ai_translate_request`
-- `ai_thread_intelligence_request`
 
 ### Phase 3: Keep engine config in Git
 
@@ -132,7 +131,6 @@ Use explicit numeric labels so the engine does not have to infer signal strength
 - `ai_summary_request`: `0.6`
 - `ai_explain_request`: `0.8`
 - `ai_translate_request`: `0.5`
-- `ai_thread_intelligence_request`: `0.7`
 
 Adjust these after observing feed behavior. For news, over-weighting impressions usually hurts quality because passive exposure is not strong preference.
 

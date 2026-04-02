@@ -16,8 +16,7 @@ export const VALID_EVENT_TYPES = new Set([
   "external_open",
   "ai_summary_request",
   "ai_explain_request",
-  "ai_translate_request",
-  "ai_thread_intelligence_request"
+  "ai_translate_request"
 ]);
 
 function normalizeMetadata(value) {
@@ -89,8 +88,6 @@ export function labelForEvent(eventType, dwellMs = null) {
       return 0.8;
     case "ai_translate_request":
       return 0.5;
-    case "ai_thread_intelligence_request":
-      return 0.7;
     default:
       return 0;
   }
@@ -147,7 +144,7 @@ export function validateEventBatch(events) {
   return { valid, rejected };
 }
 
-export async function storeEvents(env, userId, events) {
+export async function storeEvents(env, userId, events, ctx) {
   if (events.length === 0) {
     return { stored: 0 };
   }
@@ -158,7 +155,17 @@ export async function storeEvents(env, userId, events) {
 
   log.info({ event: "events_stored", userId, submitted: events.length, stored });
 
-  shaped.trackEvents(env, userId, contextualizedEvents).catch(() => {});
+  const shapedPromise = shaped.trackEvents(env, userId, contextualizedEvents)
+    .then((result) => {
+      if (!result.ok) {
+        log.warn({ event: "shaped_track_fail", userId, count: contextualizedEvents.length, reason: result.reason });
+      } else {
+        log.info({ event: "shaped_track_ok", userId, count: contextualizedEvents.length });
+      }
+    })
+    .catch((err) => log.warn({ event: "shaped_track_error", userId, count: contextualizedEvents.length, ...log.fmtError(err) }));
+
+  ctx?.waitUntil(shapedPromise);
 
   return { stored };
 }

@@ -134,31 +134,6 @@ export function validateSummary(parsed) {
   return bullets.length > 0 ? bullets : null;
 }
 
-function validateThreadIntelligence(parsed) {
-  if (!parsed || typeof parsed !== "object") {
-    return null;
-  }
-
-  const summary = sanitizeString(parsed.summary);
-  const discussionShape = sanitizeString(parsed.discussionShape).toLowerCase();
-  const validShape = ["heated", "consensus", "mixed"].includes(discussionShape) ? discussionShape : null;
-  const keyInsights = Array.isArray(parsed.keyInsights)
-    ? parsed.keyInsights
-      .map((value) => sanitizeString(value))
-      .filter(Boolean)
-    : [];
-
-  if (!summary || !validShape || keyInsights.length === 0) {
-    return null;
-  }
-
-  return {
-    summary,
-    keyInsights,
-    discussionShape: validShape
-  };
-}
-
 export function validateExplain(parsed, fallbackLevel) {
   if (!parsed || typeof parsed !== "object") {
     return null;
@@ -270,57 +245,6 @@ export async function generateTranslation(env, text, targetLanguage) {
     ]
   });
   return result;
-}
-
-export async function generateThreadIntelligence(env, payload, options = {}) {
-  const comments = (payload.comments ?? [])
-    .slice(0, 50)
-    .map((comment) => ({
-      id: comment.id,
-      parentId: comment.parentId ?? null,
-      author: comment.author,
-      depth: comment.depth,
-      text: comment.text
-    }));
-
-  const action = AI_ACTIONS.thread_intelligence;
-  const promptConfig = await resolvePromptConfig(env, "thread_intelligence", options.promptConfig);
-  const response = await callOpenAIStructured(env, {
-    model: promptConfig.model ?? action.model,
-    max_completion_tokens: promptConfig.maxCompletionTokens ?? action.maxTokens,
-    messages: [
-      {
-        role: "system",
-        content: promptConfig.systemPrompt
-      },
-      {
-        role: "user",
-        content: buildPromptInput(promptConfig.userPromptTemplate, {
-          payload: JSON.stringify({
-            storyId: payload.storyId,
-            title: payload.title,
-            comments
-          })
-        })
-      }
-    ],
-    schema: action.schema
-  }, {
-    includeMeta: options.includeMeta
-  });
-  const raw = options.includeMeta ? response?.content ?? null : response;
-
-  const parsed = parseStructuredResponse(raw);
-  const normalized = validateThreadIntelligence(parsed);
-  if (normalized) {
-    return options.includeMeta ? { result: normalized, usage: response?.usage ?? null } : normalized;
-  }
-
-  log.warn({
-    event: "ai_thread_intelligence_validation_fail",
-    detail: String(raw ?? "").slice(0, 300)
-  });
-  return options.includeMeta ? { result: null, usage: response?.usage ?? null } : null;
 }
 
 export async function generateExplain(env, payload, options = {}) {

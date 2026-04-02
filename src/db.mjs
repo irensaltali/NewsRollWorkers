@@ -3,7 +3,6 @@ import { fixtureFeed } from "./fixtures.mjs";
 import { normalizePersistedCostFields, serializeCostFields } from "./model-catalog.mjs";
 import { AI_PROMPT_KEYS, DEFAULT_AI_PROMPT_CONFIGS, parsePromptSettings } from "./prompt-config.mjs";
 import {
-  querySeenStoryIds,
   queryStoryStats
 } from "./event-analytics.mjs";
 import * as log from "./log.mjs";
@@ -437,44 +436,6 @@ export async function attachStoryContextToEvents(env, events) {
   });
 }
 
-// ── User profiles ─────────────────────────────────────────────────────────────
-
-export async function getUserProfile(env, userId) {
-  if (!hasDB(env)) return null;
-
-  const { data } = await getDB(env)
-    .from("user_profiles")
-    .select("*")
-    .eq("user_id", userId)
-    .maybeSingle();
-
-  if (!data) return null;
-  return {
-    userId: data.user_id,
-    platform: data.platform,
-    endpointScores: data.endpoint_scores,
-    mediaPref: data.media_pref,
-    totalImpressions: data.total_impressions,
-    totalEngagements: data.total_engagements,
-    updatedAt: data.updated_at
-  };
-}
-
-export async function upsertUserProfile(env, userId, profile) {
-  if (!hasDB(env)) return;
-
-  await getDB(env)
-    .from("user_profiles")
-    .upsert({
-      user_id: userId,
-      endpoint_scores: profile.endpointScores ?? {},
-      media_pref: profile.mediaPref ?? {},
-      total_impressions: profile.totalImpressions ?? 0,
-      total_engagements: profile.totalEngagements ?? 0,
-      updated_at: new Date().toISOString()
-    });
-}
-
 // ── AI results cache ──────────────────────────────────────────────────────────
 
 export async function getCachedAIResult(env, cacheKey) {
@@ -541,49 +502,6 @@ export async function storeAIRequestReceipt(env, payload) {
       target_language: payload.targetLanguage ?? "",
       content_hash: payload.contentHash
     });
-}
-
-// ── Recommendation ────────────────────────────────────────────────────────────
-
-export async function getRecommendationCandidates(env, limit = 200) {
-  if (!hasDB(env)) return [];
-
-  let data = null;
-  try {
-    const result = await getDB(env).rpc("get_recommendation_candidates", { p_limit: limit });
-    data = result.data ?? null;
-  } catch {
-    const fallback = await getDB(env)
-      .from("published_feed_entries")
-      .select("*")
-      .order("publish_sequence", { ascending: false })
-      .limit(limit);
-    data = fallback.data ?? [];
-  }
-  return (data ?? []).map((r) => ({
-    storyId: r.story_id,
-    publishSequence: r.publish_sequence,
-    sourceEndpoint: r.source_endpoint,
-    publishedAt: r.published_at,
-    engagementCount: r.engagement_count,
-    impressionCount: r.impression_count,
-    mediaUrl: r.media_url,
-    mediaStatus: r.media_status,
-    headline: r.headline,
-    mediaType: r.media_type,
-    mediaProvider: r.media_provider,
-    mediaModel: r.media_model,
-    generationStatus: r.generation_status,
-    generationLatencyMs: r.generation_latency_ms,
-    generationCostUsd: r.generation_cost_usd,
-    promptTemplateId: r.prompt_template_id,
-    promptTemplateName: r.prompt_template_name,
-    readableUrl: r.readable_url
-  }));
-}
-
-export async function getSeenStoryIds(env, userId, days = 7) {
-  return querySeenStoryIds(env, userId, days);
 }
 
 // ── AI prompt configs ─────────────────────────────────────────────────────────
@@ -847,6 +765,17 @@ export async function insertRSSItem(env, item) {
   }
 
   return !error;
+}
+
+export async function getRSSSourceIdByStoryId(env, storyId) {
+  if (!hasDB(env)) return null;
+  const { data } = await getDB(env)
+    .from("rss_items")
+    .select("source_id")
+    .eq("story_id", storyId)
+    .limit(1)
+    .maybeSingle();
+  return data?.source_id ?? null;
 }
 
 export async function getStoryContentMetadataByStoryId(env, storyId) {

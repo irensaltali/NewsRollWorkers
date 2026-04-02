@@ -59,26 +59,6 @@ function withMockedFetch(mocks, fn) {
   });
 }
 
-function makeThreadBody(overrides = {}) {
-  return {
-    storyId: 401,
-    title: "Show HN: Thread analyzer",
-    comments: [
-      { id: 501, parentId: 401, author: "pg", text: "This is thoughtful.", depth: 0 },
-      { id: 502, parentId: 501, author: "dang", text: "The UX tradeoff is real.", depth: 1 }
-    ],
-    ...overrides
-  };
-}
-
-async function createThreadContentHash(body) {
-  return sha256Hex(sortedJson({
-    storyId: body.storyId,
-    title: body.title,
-    comments: body.comments.map((comment) => ({ id: comment.id, text: comment.text }))
-  }));
-}
-
 function makeExplainBody(overrides = {}) {
   return {
     storyId: 701,
@@ -187,33 +167,6 @@ test("explain endpoint routes simple and technical modes with distinct costs", a
   assert.equal(modeRequests.some((content) => content.includes('"level":"technical"')), true);
 });
 
-test("thread intelligence rejects malformed AI output without caching it", async () => {
-  const installId = "thread-invalid-output";
-  const token = makeToken(installId);
-  // No D1 inserts happen without SUPABASE_URL; the assertion below trivially passes (empty array)
-  const inserts = [];
-  const response = await withMockedFetch([
-    ...customerMocks(installId),
-    {
-      match: "api.openai.com",
-      body: { choices: [{ message: { content: "not valid json" } }] }
-    }
-  ], async () => worker.fetch(
-    new Request("https://example.com/v1/ai/thread-intelligence", {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        authorization: `Bearer ${token}`
-      },
-      body: JSON.stringify(makeThreadBody())
-    }),
-    { ...env }
-  ));
-
-  assert.equal(response.status, 502);
-  assert.equal(inserts.some((entry) => entry.sql.includes("ai_results_cache")), false);
-});
-
 test("explain logs empty model content and does not cache or charge", async () => {
   const installId = "explain-empty-output";
   const token = makeToken(installId);
@@ -259,54 +212,6 @@ test("explain logs empty model content and does not cache or charge", async () =
   }
 
   assert.ok(captured.some((entry) => entry.event === "ai_empty_content"));
-});
-
-test("changed thread comments produce a new hash and charge the same user again", async () => {
-  const installId = "thread-changed-user";
-  const token = makeToken(installId);
-  const original = makeThreadBody();
-  const updated = makeThreadBody({
-    comments: [
-      { id: 501, parentId: 401, author: "pg", text: "This is thoughtful.", depth: 0 },
-      { id: 502, parentId: 501, author: "dang", text: "The UX tradeoff is real, but the launch copy helps.", depth: 1 }
-    ]
-  });
-  const oldHash = await createThreadContentHash(original);
-
-  const spendCounter = { count: 0 };
-  const response = await withMockedFetch([
-    ...withSpendCounter(customerMocks(installId, { balance: 800, spendBalance: 792 }), spendCounter),
-    {
-      match: "api.openai.com",
-      body: {
-        choices: [{
-          message: {
-            content: JSON.stringify({
-              summary: "The updated thread spends more time on launch messaging.",
-              keyInsights: ["Messaging quality becomes part of the product critique."],
-              discussionShape: "mixed"
-            })
-          }
-        }]
-      }
-    }
-  ], async () => worker.fetch(
-    new Request("https://example.com/v1/ai/thread-intelligence", {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        authorization: `Bearer ${token}`
-      },
-      body: JSON.stringify(updated)
-    }),
-    { ...env }
-  ));
-
-  assert.equal(response.status, 200);
-  const payload = await response.json();
-  assert.notEqual(payload.contentHash, oldHash);
-  assert.equal(payload.charged, true);
-  assert.equal(spendCounter.count, 1);
 });
 
 test("changed article text produces a new explain hash", async () => {

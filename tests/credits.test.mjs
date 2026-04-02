@@ -549,7 +549,6 @@ test("credits endpoint returns balance and pro status", async () => {
     assert.ok(payload.costs);
     assert.equal(payload.costs.summary, 1);
     assert.equal(payload.costs.translation, 1);
-    assert.equal(payload.costs.thread_intelligence, 8);
     assert.equal(payload.costs.explain_simple, 6);
     assert.equal(payload.costs.explain_technical, 10);
     assert.equal("video" in payload.costs, false);

@@ -2,7 +2,6 @@ export const AI_PROMPT_KEYS = Object.freeze([
   "headline",
   "summary",
   "translation",
-  "thread_intelligence",
   "explain_simple",
   "explain_technical"
 ]);
@@ -40,17 +39,6 @@ export const DEFAULT_AI_PROMPT_CONFIGS = Object.freeze({
       "You translate news content into the requested language. Return valid JSON only. Preserve IDs exactly. Translate only human-readable text fields. Do not include markdown fences or commentary.",
     userPromptTemplate:
       'Target language: {{targetLanguage}}.\n\nTranslate the following structured JSON and respond with an object shaped like:\n{"story":{"title":"...","text":"..."},"comments":[{"id":123,"text":"..."}]}\n\n{{payload}}',
-    settings: {}
-  }),
-  thread_intelligence: Object.freeze({
-    key: "thread_intelligence",
-    name: "Thread Intelligence",
-    provider: "openai",
-    model: "o4-mini",
-    maxCompletionTokens: 3000,
-    systemPrompt:
-      "You analyze news comment threads. Summarize the overall discussion, extract the highest-signal insights, and classify the discussion shape as heated, consensus, or mixed. Base your answer only on the provided thread content.",
-    userPromptTemplate: "{{payload}}",
     settings: {}
   }),
   explain_simple: Object.freeze({
