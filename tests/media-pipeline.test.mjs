@@ -65,6 +65,10 @@ test("mediaPerRunLimit returns default without env override", () => {
   assert.equal(mediaPerRunLimit({}), MEDIA_PER_RUN_LIMIT_DEFAULT);
 });
 
+test("mediaPerRunLimit defaults to 1 for staging without explicit var", () => {
+  assert.equal(mediaPerRunLimit({ ENVIRONMENT: "staging" }), 1);
+});
+
 test("mediaPerRunLimit respects MEDIA_PER_RUN_LIMIT env var", () => {
   assert.equal(mediaPerRunLimit({ MEDIA_PER_RUN_LIMIT: "7" }), 7);
 });

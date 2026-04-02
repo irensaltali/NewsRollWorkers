@@ -47,7 +47,12 @@ export function dailyMediaLimit(env) {
 }
 
 export function mediaPerRunLimit(env) {
-  const parsed = Number.parseInt(env?.MEDIA_PER_RUN_LIMIT ?? "", 10);
+  const envVar = env?.MEDIA_PER_RUN_LIMIT
+    ?? (env?.ENVIRONMENT === "staging" ? "1" : null);
+  if (envVar === null) {
+    return MEDIA_PER_RUN_LIMIT_DEFAULT;
+  }
+  const parsed = Number.parseInt(envVar, 10);
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : MEDIA_PER_RUN_LIMIT_DEFAULT;
 }
 

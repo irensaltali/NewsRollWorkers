@@ -92,7 +92,7 @@
 					"PUBLIC_MEDIA_BASE_URL": "https://media-staging.newsroll.app",
 				"MEDIA_MIN_SCORE": "5",
 				"MEDIA_DAILY_LIMIT": "10",
-				"MEDIA_PER_RUN_LIMIT": "5",
+				"MEDIA_PER_RUN_LIMIT": "1",
 				"SUPABASE_URL": "https://snazihvdznshybaogwrx.supabase.co"
 			},
 			"durable_objects": {
