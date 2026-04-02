@@ -1,0 +1,89 @@
+{
+	"$schema": "../../node_modules/wrangler/config-schema.json",
+	"name": "newsroll-ingest",
+	"main": "index.mjs",
+	"compatibility_date": "2026-03-09",
+	"compatibility_flags": [
+		"nodejs_compat_v2"
+	],
+	// Required secrets (wrangler secret put):
+	// - SUPABASE_SECRET_KEY
+	// - OPENAI_API_KEY
+	// - SHAPED_API_KEY
+	"vars": {
+		"APP_NAME": "NewsRoll Ingest",
+		"ENVIRONMENT": "production",
+		"CLOUDFLARE_ACCOUNT_ID": "ccbc9926d08a298aee2a4f0cffcfc4a3",
+		"EVENT_ANALYTICS_DATASET": "newsroll_user_events",
+		"PUBLIC_API_BASE_URL": "https://api.newsroll.app",
+		"PUBLIC_MEDIA_BASE_URL": "https://media.newsroll.app",
+		"MEDIA_DAILY_LIMIT": "50",
+		"MEDIA_PER_RUN_LIMIT": "5",
+		"MEDIA_MIN_SCORE": "5",
+		"SUPABASE_URL": "https://snazihvdznshybaogwrx.supabase.co"
+	},
+	"queues": {
+		"producers": [
+			{
+				"binding": "MEDIA_QUEUE",
+				"queue": "newsroll-media"
+			}
+		]
+	},
+	"analytics_engine_datasets": [
+		{
+			"binding": "EVENT_ANALYTICS",
+			"dataset": "newsroll_user_events"
+		}
+	],
+	"triggers": {
+		"crons": [
+			"*/5 * * * *"
+		]
+	},
+	"observability": {
+		"enabled": true,
+		"head_sampling_rate": 1
+	},
+	// ── Staging environment ─────────────────────────────────────────────
+	"env": {
+		"staging": {
+			"name": "newsroll-ingest-staging",
+			"vars": {
+				"APP_NAME": "NewsRoll Ingest",
+				"ENVIRONMENT": "staging",
+				"CLOUDFLARE_ACCOUNT_ID": "ccbc9926d08a298aee2a4f0cffcfc4a3",
+				"EVENT_ANALYTICS_DATASET": "newsroll_user_events",
+				"PUBLIC_API_BASE_URL": "https://api-staging.newsroll.app",
+				"PUBLIC_MEDIA_BASE_URL": "https://media-staging.newsroll.app",
+				"MEDIA_DAILY_LIMIT": "10",
+				"MEDIA_PER_RUN_LIMIT": "1",
+				"MEDIA_MIN_SCORE": "5",
+				"SUPABASE_URL": "https://snazihvdznshybaogwrx.supabase.co"
+			},
+			"queues": {
+				"producers": [
+					{
+						"binding": "MEDIA_QUEUE",
+						"queue": "newsroll-media-staging"
+					}
+				]
+			},
+			"analytics_engine_datasets": [
+				{
+					"binding": "EVENT_ANALYTICS",
+					"dataset": "newsroll_user_events"
+				}
+			],
+			"triggers": {
+				"crons": [
+					"*/5 * * * *"
+				]
+			},
+			"observability": {
+				"enabled": true,
+				"head_sampling_rate": 1
+			}
+		}
+	}
+}

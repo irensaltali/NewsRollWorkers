@@ -366,49 +366,6 @@ function buildDynamicCatalog({ openAILiveIds, falLiveModels, falPricing, stale =
   };
 }
 
-export async function getAdminModelCatalog(env, { forceRefresh = false } = {}) {
-  const now = Date.now();
-  if (!forceRefresh && modelCatalogCache?.expiresAt > now && modelCatalogCache?.data) {
-    return clone(modelCatalogCache.data);
-  }
-
-  try {
-    const [openAILiveIds, falLiveModels, falPricing] = await Promise.all([
-      fetchOpenAILiveIds(env),
-      fetchFalLiveModels(env).catch(() => null),
-      fetchFalPricing(env).catch(() => new Map())
-    ]);
-
-    const catalog = buildDynamicCatalog({
-      openAILiveIds,
-      falLiveModels,
-      falPricing,
-      stale: false
-    });
-
-    modelCatalogCache = {
-      data: catalog,
-      expiresAt: now + MODEL_CATALOG_TTL_MS
-    };
-
-    return clone(catalog);
-  } catch {
-    if (modelCatalogCache?.data) {
-      return {
-        ...clone(modelCatalogCache.data),
-        stale: true
-      };
-    }
-
-    const fallback = createFallbackCatalog();
-    modelCatalogCache = {
-      data: fallback,
-      expiresAt: now + MODEL_CATALOG_TTL_MS
-    };
-    return clone(fallback);
-  }
-}
-
 export function normalizePersistedCostFields(row) {
   const costDetails = row?.costDetails ?? row?.costDetailsJson;
   const parsedCostDetails = typeof costDetails === "string"

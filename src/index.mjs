@@ -462,11 +462,7 @@ function aiBillingError(result) {
   return null;
 }
 
-const ALLOWED_ORIGINS = [
-  "https://admin.newsroll.app",
-  "https://admin-staging.newsroll.app",
-  "https://newsroll.app"
-];
+const ALLOWED_ORIGINS = ["https://newsroll.app"];
 
 function corsOrigin(request) {
   const origin = request?.headers?.get?.("origin") ?? "";

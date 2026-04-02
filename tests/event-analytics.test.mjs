@@ -3,7 +3,6 @@ import assert from "node:assert/strict";
 
 import {
   querySeenStoryIds,
-  queryStoryVelocityWindow,
   writeEventBatch
 } from "../src/event-analytics.mjs";
 
@@ -85,42 +84,3 @@ test("querySeenStoryIds reads distinct story ids from Analytics Engine SQL API",
   }
 });
 
-test("queryStoryVelocityWindow aggregates event counts from Analytics Engine SQL API", async () => {
-  const env = {
-    CLOUDFLARE_ACCOUNT_ID: "acct-1",
-    CLOUDFLARE_API_TOKEN: "token-1",
-    EVENT_ANALYTICS_DATASET: "newsroll_user_events"
-  };
-
-  let query = null;
-  const originalFetch = globalThis.fetch;
-  globalThis.fetch = async (_input, init) => {
-    query = init.body;
-    return new Response(JSON.stringify({
-      data: [{
-        imp: 10,
-        eng: 4,
-        saves: 1,
-        skips: 2,
-        completes: 1,
-        detail_opens: 1,
-        shares: 0,
-        hides: 1,
-        ai_actions: 2
-      }]
-    }), {
-      status: 200,
-      headers: { "content-type": "application/json" }
-    });
-  };
-
-  try {
-    const row = await queryStoryVelocityWindow(env, 987, 30);
-    assert.equal(row.imp, 10);
-    assert.equal(row.ai_actions, 2);
-    assert.match(query, /blob2 = '987'/);
-    assert.match(query, /INTERVAL '30' MINUTE/);
-  } finally {
-    globalThis.fetch = originalFetch;
-  }
-});

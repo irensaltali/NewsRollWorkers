@@ -9,15 +9,17 @@ if [ "$ENV" != "production" ] && [ "$ENV" != "staging" ]; then
 fi
 
 API_CONFIG="workers/api/wrangler.jsonc"
-ADMIN_CONFIG="workers/admin/wrangler.jsonc"
-MEDIA_CONFIG="workers/media/wrangler.jsonc"
+INGEST_CONFIG="workers/ingest/wrangler.jsonc"
+PROCESSOR_CONFIG="workers/processor/wrangler.jsonc"
 
 if [ "$ENV" = "staging" ]; then
   API_SCRIPT_NAME="newsroll-workers-staging"
+  OLD_MEDIA_SCRIPT_NAME="newsroll-media-staging"
   MEDIA_QUEUE_NAME="newsroll-media-staging"
   ENV_FLAG="--env staging"
 else
   API_SCRIPT_NAME="newsroll-workers"
+  OLD_MEDIA_SCRIPT_NAME="newsroll-media"
   MEDIA_QUEUE_NAME="newsroll-media"
   ENV_FLAG=""
 fi
@@ -37,36 +39,28 @@ echo "--- Installing Workers dependencies ---"
 pnpm install
 echo ""
 
-echo "--- Building NewsRoll Admin UI ---"
-pnpm --prefix ../NewsRollAdmin install
-if pnpm --prefix ../NewsRollAdmin run build; then
-  echo "  ✓ Admin UI built"
-else
-  echo "  ✗ Admin UI build failed — aborting deploy"
-  exit 1
-fi
-echo ""
-
-# ── 1. Detach stale queue consumer ───────────────────────────────────
-echo "--- Detaching stale API queue consumer (${API_SCRIPT_NAME} <- ${MEDIA_QUEUE_NAME}) ---"
-if QUEUE_INFO=$(npx wrangler queues info "$MEDIA_QUEUE_NAME" 2>&1); then
-  if printf '%s\n' "$QUEUE_INFO" | grep -Fq "worker:${API_SCRIPT_NAME}"; then
-    if npx wrangler queues consumer remove "$MEDIA_QUEUE_NAME" "$API_SCRIPT_NAME"; then
-      echo "  ✓ API consumer removed"
+# ── 1. Detach stale queue consumers ──────────────────────────────────
+for STALE_CONSUMER in "$API_SCRIPT_NAME" "$OLD_MEDIA_SCRIPT_NAME"; do
+  echo "--- Checking stale queue consumer (${STALE_CONSUMER} <- ${MEDIA_QUEUE_NAME}) ---"
+  if QUEUE_INFO=$(npx wrangler queues info "$MEDIA_QUEUE_NAME" 2>&1); then
+    if printf '%s\n' "$QUEUE_INFO" | grep -Fq "worker:${STALE_CONSUMER}"; then
+      if npx wrangler queues consumer remove "$MEDIA_QUEUE_NAME" "$STALE_CONSUMER"; then
+        echo "  ✓ ${STALE_CONSUMER} consumer removed"
+      else
+        echo "  ! Could not remove ${STALE_CONSUMER} consumer cleanly; continuing"
+      fi
     else
-      echo "  ! API consumer appears attached but could not be removed cleanly; continuing"
+      echo "  - ${STALE_CONSUMER} not attached; skipping"
     fi
   else
-    echo "  - API consumer not attached; skipping removal"
+    echo "  ! Could not inspect queue consumers; skipping"
   fi
-else
-  echo "  ! Could not inspect queue consumers; skipping stale consumer removal"
-fi
-echo ""
+  echo ""
+done
 
 # ── 2. Deploy workers ────────────────────────────────────────────────
-WORKERS=("$API_CONFIG" "$ADMIN_CONFIG" "$MEDIA_CONFIG")
-LABELS=("API" "Admin" "Media")
+WORKERS=("$API_CONFIG" "$INGEST_CONFIG" "$PROCESSOR_CONFIG")
+LABELS=("API" "Ingest" "Processor")
 
 for i in "${!WORKERS[@]}"; do
   CONFIG="${WORKERS[$i]}"

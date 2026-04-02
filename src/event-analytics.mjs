@@ -122,55 +122,6 @@ export async function querySeenStoryIds(env, userId, days = 7) {
   }
 }
 
-export async function queryStoryVelocityWindow(env, storyId, minutes = 120) {
-  if (!hasEventAnalyticsQueryConfig(env)) {
-    return null;
-  }
-
-  try {
-    const rows = await queryEventAnalytics(env, `
-      SELECT
-        SUM(CASE WHEN blob3 = 'impression' THEN _sample_interval ELSE 0 END) AS imp,
-        SUM(CASE WHEN blob3 IN ('dwell', 'complete', 'vote', 'save', 'share', 'detail_open', 'external_open') THEN _sample_interval ELSE 0 END) AS eng,
-        SUM(CASE WHEN blob3 = 'save' THEN _sample_interval ELSE 0 END) AS saves,
-        SUM(CASE WHEN blob3 = 'skip' THEN _sample_interval ELSE 0 END) AS skips,
-        SUM(CASE WHEN blob3 = 'complete' THEN _sample_interval ELSE 0 END) AS completes,
-        SUM(CASE WHEN blob3 = 'detail_open' THEN _sample_interval ELSE 0 END) AS detail_opens,
-        SUM(CASE WHEN blob3 = 'share' THEN _sample_interval ELSE 0 END) AS shares,
-        SUM(CASE WHEN blob3 = 'hide' THEN _sample_interval ELSE 0 END) AS hides,
-        SUM(CASE WHEN blob3 LIKE 'ai_%' THEN _sample_interval ELSE 0 END) AS ai_actions
-      FROM ${eventAnalyticsTable(env)}
-      WHERE blob2 = ${sqlString(storyId)}
-        AND timestamp > NOW() - INTERVAL '${Math.max(1, minutes)}' MINUTE
-    `);
-
-    return rows?.[0] ?? null;
-  } catch (err) {
-    log.warn({ event: "event_analytics_query_fail", query: "story_velocity", storyId, ...log.fmtError(err) });
-    return null;
-  }
-}
-
-export async function queryActiveStoryIds(env, minutes = 120) {
-  if (!hasEventAnalyticsQueryConfig(env)) return [];
-
-  try {
-    const rows = await queryEventAnalytics(env, `
-      SELECT blob2 AS story_id
-      FROM ${eventAnalyticsTable(env)}
-      WHERE timestamp > NOW() - INTERVAL '${Math.max(1, minutes)}' MINUTE
-      GROUP BY story_id
-    `);
-
-    return rows
-      .map((row) => Number.parseInt(row.story_id, 10))
-      .filter(Number.isInteger);
-  } catch (err) {
-    log.warn({ event: "event_analytics_query_fail", query: "active_story_ids", ...log.fmtError(err) });
-    return [];
-  }
-}
-
 export async function queryStoryStats(env, days = 90) {
   if (!hasEventAnalyticsQueryConfig(env)) return [];
 

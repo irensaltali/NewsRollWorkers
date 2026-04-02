@@ -6,9 +6,7 @@
   "scripts": {
     "dev": "npm run dev:api",
     "dev:api": "wrangler dev --local --config workers/api/wrangler.jsonc",
-    "dev:admin": "wrangler dev --local --config workers/admin/wrangler.jsonc",
     "dev:media": "wrangler dev --local --config workers/media/wrangler.jsonc",
-    "build:admin-ui": "npm --prefix ../NewsRollAdmin run build",
     "deploy": "bash deploy.sh production",
     "deploy:staging": "bash deploy.sh staging",
     "test": "node --test"

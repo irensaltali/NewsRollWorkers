@@ -125,7 +125,7 @@ CREATE TABLE ai_request_receipts (
 );
 CREATE INDEX idx_ai_receipts_story_action ON ai_request_receipts(story_id, action, target_language, content_hash);
 
--- AI prompt configs (admin-managed).
+-- AI prompt configs.
 CREATE TABLE ai_prompt_configs (
   key TEXT PRIMARY KEY,
   name TEXT NOT NULL,
@@ -139,41 +139,6 @@ CREATE TABLE ai_prompt_configs (
   updated_at TEXT NOT NULL DEFAULT (datetime('now')),
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
-
--- Admin users and sessions.
-CREATE TABLE admin_users (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  username TEXT NOT NULL UNIQUE,
-  password_salt TEXT NOT NULL,
-  password_hash TEXT NOT NULL,
-  active INTEGER NOT NULL DEFAULT 1,
-  created_at TEXT NOT NULL DEFAULT (datetime('now')),
-  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-);
-
-CREATE TABLE admin_sessions (
-  id TEXT PRIMARY KEY,
-  user_id INTEGER NOT NULL REFERENCES admin_users(id) ON DELETE CASCADE,
-  session_hash TEXT NOT NULL UNIQUE,
-  access_email TEXT,
-  access_subject TEXT,
-  created_at TEXT NOT NULL DEFAULT (datetime('now')),
-  expires_at TEXT NOT NULL,
-  last_seen_at TEXT NOT NULL DEFAULT (datetime('now'))
-);
-CREATE INDEX admin_sessions_user_idx ON admin_sessions(user_id, expires_at DESC);
-
-CREATE TABLE admin_audit_log (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  user_id INTEGER REFERENCES admin_users(id) ON DELETE SET NULL,
-  username TEXT,
-  action TEXT NOT NULL,
-  target_type TEXT,
-  target_id TEXT,
-  details_json TEXT,
-  created_at TEXT NOT NULL DEFAULT (datetime('now'))
-);
-CREATE INDEX admin_audit_log_created_idx ON admin_audit_log(created_at DESC);
 
 -- Prompt run events (observability).
 CREATE TABLE prompt_run_events (
@@ -202,36 +167,6 @@ CREATE TABLE prompt_run_events (
 );
 CREATE INDEX prompt_run_events_lookup_idx ON prompt_run_events(prompt_kind, prompt_key, created_at DESC);
 CREATE INDEX prompt_run_events_source_idx ON prompt_run_events(source, created_at DESC);
-
--- Prompt test results (admin).
-CREATE TABLE prompt_test_results (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  prompt_kind TEXT NOT NULL,
-  prompt_key TEXT NOT NULL,
-  prompt_template_id INTEGER REFERENCES prompt_templates(id) ON DELETE SET NULL,
-  provider TEXT NOT NULL,
-  model TEXT,
-  modality TEXT NOT NULL,
-  status TEXT NOT NULL,
-  latency_ms INTEGER,
-  input_json TEXT NOT NULL,
-  output_json TEXT,
-  prompt_preview TEXT,
-  artifact_url TEXT,
-  error_text TEXT,
-  story_id INTEGER,
-  story_url TEXT,
-  selected INTEGER NOT NULL DEFAULT 0,
-  notes TEXT,
-  created_by TEXT,
-  cost_usd REAL,
-  cost_currency TEXT,
-  cost_estimated INTEGER,
-  pricing_source TEXT,
-  cost_details_json TEXT,
-  created_at TEXT NOT NULL DEFAULT (datetime('now'))
-);
-CREATE INDEX prompt_test_results_lookup_idx ON prompt_test_results(prompt_kind, prompt_key, created_at DESC);
 
 -- Seed prompt templates
 INSERT INTO prompt_templates (name, description, template_text, modality, provider, model, settings_json) VALUES

@@ -1,6 +1,6 @@
 {
 	"$schema": "../../node_modules/wrangler/config-schema.json",
-	"name": "newsroll-media",
+	"name": "newsroll-processor",
 	"main": "index.mjs",
 	"compatibility_date": "2026-03-09",
 	"compatibility_flags": [
@@ -21,18 +21,19 @@
 		}
 	],
 	"vars": {
-		"APP_NAME": "NewsRoll Media",
+		"APP_NAME": "NewsRoll Processor",
 		"ENVIRONMENT": "production",
 		"CLOUDFLARE_ACCOUNT_ID": "ccbc9926d08a298aee2a4f0cffcfc4a3",
-		"EVENT_ANALYTICS_DATASET": "newsroll_user_events",
-		"PUBLIC_BASE_URL": "https://media.newsroll.app",
 		"PUBLIC_API_BASE_URL": "https://api.newsroll.app",
 		"PUBLIC_MEDIA_BASE_URL": "https://media.newsroll.app",
-		"MEDIA_DAILY_LIMIT": "50",
-		"MEDIA_PER_RUN_LIMIT": "5",
-		"MEDIA_MIN_SCORE": "5",
 		"SUPABASE_URL": "https://snazihvdznshybaogwrx.supabase.co"
 	},
+	"routes": [
+		{
+			"pattern": "media.newsroll.app",
+			"custom_domain": true
+		}
+	],
 	"durable_objects": {
 		"bindings": [
 			{
@@ -54,23 +55,12 @@
 		}
 	],
 	"queues": {
-		"producers": [
-			{
-				"binding": "MEDIA_QUEUE",
-				"queue": "newsroll-media"
-			}
-		],
 		"consumers": [
 			{
 				"queue": "newsroll-media",
 				"max_batch_size": 5,
 				"max_batch_timeout": 5
 			}
-		]
-	},
-	"triggers": {
-		"crons": [
-			"*/5 * * * *"
 		]
 	},
 	"observability": {
@@ -80,21 +70,21 @@
 	// ── Staging environment ─────────────────────────────────────────────
 	"env": {
 		"staging": {
-			"name": "newsroll-media-staging",
-			// Required secrets for staging match production
+			"name": "newsroll-processor-staging",
 			"vars": {
-				"APP_NAME": "NewsRoll Media",
+				"APP_NAME": "NewsRoll Processor",
 				"ENVIRONMENT": "staging",
 				"CLOUDFLARE_ACCOUNT_ID": "ccbc9926d08a298aee2a4f0cffcfc4a3",
-				"EVENT_ANALYTICS_DATASET": "newsroll_user_events",
-				"PUBLIC_BASE_URL": "https://media-staging.newsroll.app",
 				"PUBLIC_API_BASE_URL": "https://api-staging.newsroll.app",
-					"PUBLIC_MEDIA_BASE_URL": "https://media-staging.newsroll.app",
-				"MEDIA_MIN_SCORE": "5",
-				"MEDIA_DAILY_LIMIT": "10",
-				"MEDIA_PER_RUN_LIMIT": "1",
+				"PUBLIC_MEDIA_BASE_URL": "https://media-staging.newsroll.app",
 				"SUPABASE_URL": "https://snazihvdznshybaogwrx.supabase.co"
 			},
+			"routes": [
+				{
+					"pattern": "media-staging.newsroll.app",
+					"custom_domain": true
+				}
+			],
 			"durable_objects": {
 				"bindings": [
 					{
@@ -116,23 +106,12 @@
 				}
 			],
 			"queues": {
-				"producers": [
-					{
-						"binding": "MEDIA_QUEUE",
-						"queue": "newsroll-media-staging"
-					}
-				],
 				"consumers": [
 					{
 						"queue": "newsroll-media-staging",
 						"max_batch_size": 5,
 						"max_batch_timeout": 5
 					}
-				]
-			},
-			"triggers": {
-				"crons": [
-					"*/5 * * * *"
 				]
 			},
 			"observability": {

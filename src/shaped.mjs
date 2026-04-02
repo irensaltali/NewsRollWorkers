@@ -1,9 +1,4 @@
 import * as log from "./log.mjs";
-import {
-  getStoryVelocityWindow,
-  updatePublishedFeedEntryVelocity,
-  getPublishedEntryForVelocitySync
-} from "./db.mjs";
 
 const SHAPED_BASE_URL = "https://api.shaped.ai";
 const DEFAULT_ENGINE_NAME = "newsroll_visual_v1";
@@ -77,6 +72,7 @@ export async function upsertItem(env, item) {
       novelty_score: item.noveltyScore ?? 0.5,
       publisher_tier: item.publisherTier ?? 2,
       source_reliability_score: item.sourceReliabilityScore ?? 0.5,
+      media_url: item.mediaUrl ?? null,
       media_type: item.mediaType ?? null,
       media_provider: item.mediaProvider ?? null,
       media_model: item.mediaModel ?? null,
@@ -221,63 +217,3 @@ export async function rankItems(env, userId, candidateIds, { timeoutMs = 800 } =
   }
 }
 
-/**
- * Compute velocity signals for one story from Supabase and push the updated item to Shaped.
- * Called by updateVelocitySignals() in the cron loop.
- * Never throws.
- */
-export async function refreshItemVelocity(env, storyId) {
-  if (!env?.SUPABASE_URL) return null;
-  try {
-    const [w5m, w30m, w2h, w24h] = await Promise.all([
-      getStoryVelocityWindow(env, storyId, 5),
-      getStoryVelocityWindow(env, storyId, 30),
-      getStoryVelocityWindow(env, storyId, 120),
-      getStoryVelocityWindow(env, storyId, 1440)
-    ]);
-
-    const ctr5m            = _ctr(w5m);
-    const ctr30m           = _ctr(w30m);
-    const ctr2h            = _ctr(w2h);
-    const saveRate2h       = _rate(w2h.saves,     w2h.imp);
-    const skipRate30m      = _rate(w30m.skips,    w30m.imp);
-    const completionRate2h = _rate(w2h.completes, w2h.imp);
-    const detailOpenRate2h = _rate(w2h.detailOpens, w2h.imp);
-    const shareRate2h      = _rate(w2h.shares, w2h.imp);
-    const hideRate2h       = _rate(w2h.hides, w2h.imp);
-    const aiActionRate24h  = _rate(w24h.aiActions, w24h.imp);
-
-    const signals = {
-      ctr5m,
-      ctr30m,
-      ctr2h,
-      saveRate2h,
-      skipRate30m,
-      completionRate2h,
-      detailOpenRate2h,
-      shareRate2h,
-      hideRate2h,
-      aiActionRate24h
-    };
-
-    await updatePublishedFeedEntryVelocity(env, storyId, signals);
-
-    const entry = await getPublishedEntryForVelocitySync(env, storyId);
-    if (entry) {
-      upsertItem(env, { ...entry, ...signals }).catch(() => {});
-    }
-
-    return signals;
-  } catch (err) {
-    log.warn({ event: "shaped_velocity_error", storyId, ...log.fmtError(err) });
-    return null;
-  }
-}
-
-function _ctr({ imp, eng }) {
-  return imp > 0 ? eng / imp : 0;
-}
-
-function _rate(numerator, denominator) {
-  return denominator > 0 ? numerator / denominator : 0;
-}

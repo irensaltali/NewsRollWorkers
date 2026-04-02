@@ -312,6 +312,7 @@ export async function processMediaMessage(batch, env) {
             headline,
             sourceEndpoint: body.endpoint,
             publishedAt: now,
+            mediaUrl,
             mediaType: "image",
             mediaProvider: result.provider ?? template.provider ?? "fal",
             mediaModel: result.model ?? template.model ?? null,
