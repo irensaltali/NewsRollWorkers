@@ -132,7 +132,6 @@ export function validateEventBatch(events) {
       surface: typeof event.surface === "string" && event.surface.trim().length > 0
         ? event.surface.trim()
         : "unknown",
-      position: normalizeInteger(event.position),
       feedMode: typeof event.feedMode === "string" && event.feedMode.trim().length > 0
         ? event.feedMode.trim()
         : null,

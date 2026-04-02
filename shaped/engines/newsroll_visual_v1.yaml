@@ -11,6 +11,7 @@ index:
   lexical_search:
     item_fields:
       - headline
+      - category
       - source_endpoint
   embeddings:
     - name: content_embedding
@@ -20,6 +21,7 @@ index:
         batch_size: 256
         item_fields:
           - headline
+          - category
           - source_endpoint
 training:
   models:

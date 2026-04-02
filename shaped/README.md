@@ -91,6 +91,7 @@ Keep one row per story/item. Recommended required fields:
 - `created_at`
 - `updated_at`
 - `headline`
+- `category`
 - `source_endpoint`
 
 ### Interactions table
@@ -109,7 +110,6 @@ Additional ranking context:
 - `dwell_ms`
 - `session_id`
 - `surface`
-- `position`
 - `feed_mode`
 - `media_type`
 - `source_endpoint`

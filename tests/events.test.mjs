@@ -69,7 +69,6 @@ test("validateEventBatch normalizes richer payload fields", () => {
       occurredAt: "2026-04-01T12:00:00.000Z",
       sessionId: "session-abc",
       surface: "story_detail",
-      position: 3,
       feedMode: "forYou",
       metadata: { browser: "inApp" }
     }
@@ -80,7 +79,6 @@ test("validateEventBatch normalizes richer payload fields", () => {
   assert.equal(valid[0].eventId, "evt-123");
   assert.equal(valid[0].sessionId, "session-abc");
   assert.equal(valid[0].surface, "story_detail");
-  assert.equal(valid[0].position, 3);
   assert.equal(valid[0].feedMode, "forYou");
   assert.equal(valid[0].label, 1.25);
 });

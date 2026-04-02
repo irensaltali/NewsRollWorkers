@@ -8,12 +8,12 @@ column_schema:
   created_at: DateTime
   updated_at: DateTime
   headline: String
+  category: String
   source_endpoint: String
   media_url: String
   media_type: String
   media_provider: String
   media_model: String
-  generation_status: String
   prompt_template_id: Int64
   prompt_template_name: String
   duplicate_cluster_size: Int32

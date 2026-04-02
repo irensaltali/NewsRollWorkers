@@ -12,7 +12,6 @@ column_schema:
   label: Float
   session_id: String
   surface: String
-  position: Int32
   feed_mode: String
   dwell_ms: Int32
   media_type: String

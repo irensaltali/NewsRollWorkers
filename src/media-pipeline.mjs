@@ -309,13 +309,13 @@ export async function processMediaMessage(batch, env) {
           shaped.upsertItem(env, {
             storyId: body.storyId,
             headline,
+            category: body.endpoint,
             sourceEndpoint: body.endpoint,
             publishedAt: now,
             mediaUrl,
             mediaType: "image",
             mediaProvider: result.provider ?? template.provider ?? "fal",
             mediaModel: result.model ?? template.model ?? null,
-            generationStatus: result.status,
             generationLatencyMs: generationDurationMs,
             promptTemplateId: template?.id ?? null,
             promptTemplateName: template?.name ?? null
