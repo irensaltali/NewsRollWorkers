@@ -80,6 +80,28 @@ function fixturePublishedFeed(cursor = null, limit = 20) {
     .slice(0, limit);
 }
 
+async function listStorySourceUrls(env, storyIds) {
+  if (!hasDB(env) || !Array.isArray(storyIds) || storyIds.length === 0) {
+    return new Map();
+  }
+
+  const uniqueStoryIds = [...new Set(storyIds.filter((storyId) => Number.isFinite(Number(storyId))))];
+  if (uniqueStoryIds.length === 0) {
+    return new Map();
+  }
+
+  const { data } = await getDB(env)
+    .from("story_content")
+    .select("story_id, source_url")
+    .in("story_id", uniqueStoryIds);
+
+  return new Map(
+    (data ?? [])
+      .filter((entry) => entry?.source_url)
+      .map((entry) => [Number(entry.story_id), entry.source_url])
+  );
+}
+
 // ── Visual feed ──────────────────────────────────────────────────────────────
 
 export async function listPublishedVisualFeed(env, { cursor = null, limit = 20 } = {}) {
@@ -105,12 +127,18 @@ export async function listPublishedVisualFeed(env, { cursor = null, limit = 20 }
     data = rows ?? [];
   }
 
+  const sourceUrlsByStoryId = await listStorySourceUrls(
+    env,
+    (data ?? []).map((entry) => Number(entry.story_id))
+  );
+
   return (data ?? []).map((r) => ({
     storyId: r.story_id,
     publishSequence: r.publish_sequence,
     sourceEndpoint: r.source_endpoint,
     publishedAt: r.published_at,
     mediaUrl: r.media_url,
+    sourceUrl: sourceUrlsByStoryId.get(Number(r.story_id)) ?? null,
     mediaStatus: r.media_status,
     headline: r.headline
   }));
@@ -217,6 +245,7 @@ async function upsertStoryContent(env, payload) {
   assignDefined(row, "feed_url", resolvedUrls.feedUrl);
   assignDefined(row, "summary", payload.summary);
   assignDefined(row, "explanation", payload.explanation);
+  assignDefined(row, "explanation_json", payload.explanationJson);
   assignDefined(row, "ai_headline", payload.aiHeadline);
   assignDefined(row, "topics", payload.topics);
 
@@ -239,6 +268,42 @@ export async function getReadableContent(env, storyId) {
     .maybeSingle();
 
   return data ? { extractedText: data.extracted_text, aiHeadline: data.ai_headline ?? null } : null;
+}
+
+export async function getStorySummaryAndContent(env, storyId) {
+  if (!hasDB(env)) return null;
+
+  const { data } = await getDB(env)
+    .from("story_content")
+    .select("summary, extracted_text")
+    .eq("story_id", storyId)
+    .maybeSingle();
+
+  if (!data) return null;
+  return {
+    summary: data.summary ?? null,
+    extractedText: data.extracted_text ?? null
+  };
+}
+
+export async function getStoryExplanationData(env, storyId) {
+  if (!hasDB(env)) return null;
+
+  const { data } = await getDB(env)
+    .from("story_content")
+    .select("explanation_json")
+    .eq("story_id", storyId)
+    .maybeSingle();
+
+  return data?.explanation_json ?? null;
+}
+
+export async function storeStoryExplanationData(env, storyId, explanationData) {
+  await upsertStoryContent(env, {
+    storyId,
+    explanationJson: explanationData,
+    updatedAt: new Date().toISOString()
+  });
 }
 
 export async function storeHeadline(env, storyId, headline) {

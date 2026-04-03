@@ -1,5 +1,5 @@
 version: v2
-name: newsroll_visual_v1
+name: newsroll_visual_v2
 data:
   item_table:
     name: newsroll_items
@@ -11,8 +11,9 @@ index:
   lexical_search:
     item_fields:
       - headline
+      - title
       - category
-      - source_endpoint
+      - topics
   embeddings:
     - name: content_embedding
       encoder:
@@ -21,10 +22,11 @@ index:
         batch_size: 256
         item_fields:
           - headline
+          - title
           - category
-          - source_endpoint
+          - topics
+          - media_type
 training:
   models:
     - name: two_tower
-      policy_type: two_tower
-      strategy: early_stopping
+      policy_type: two-tower

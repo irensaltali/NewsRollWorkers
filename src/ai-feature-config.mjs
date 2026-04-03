@@ -37,22 +37,6 @@ const AI_FEATURES = Object.freeze([
     cacheTtlSeconds: cacheTtlSecondsFor("translation")
   }),
   Object.freeze({
-    key: "explain_simple",
-    title: "Explain",
-    description: "Explain the article in simple terms.",
-    routePath: "/v1/ai/explain",
-    promptKey: "explain_simple",
-    enabled: true,
-    requiresPro: true,
-    creditCost: AI_ACTIONS.explain_simple.cost,
-    usesStory: true,
-    usesArticleText: true,
-    usesComments: false,
-    usesTargetLanguage: false,
-    cacheTtlSeconds: cacheTtlSecondsFor("explain_simple"),
-    explainLevel: "simple"
-  }),
-  Object.freeze({
     key: "explain_technical",
     title: "Explain",
     description: "Explain the article with technical depth.",

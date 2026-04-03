@@ -130,6 +130,7 @@ test("visual feed returns global fixture data without D1", async () => {
   assert.equal(payload.items.length > 0, true);
   assert.equal(payload.items[0].sourceEndpoint, "front");
   assert.equal(payload.items[0].mediaStatus, "ready");
+  assert.equal(payload.items[0].sourceUrl, "https://example.com/articles/43987539");
   assert.equal(payload.items[0].readableUrl, "https://newsroll.invalid/v1/stories/43987539/article");
 });
 
@@ -171,6 +172,7 @@ test("visual feed uses cached snapshot for the first page when available", async
             sourceEndpoint: "show",
             publishedAt: "2026-03-12T10:15:00.000Z",
             mediaUrl: "https://cdn.example.com/story.jpg",
+            sourceUrl: "https://example.com/articles/50000001",
             readableUrl: "https://newsroll.invalid/v1/stories/50000001/article",
             mediaStatus: "ready",
             headline: "Cached snapshot headline"

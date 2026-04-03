@@ -250,6 +250,65 @@ test("subscriber lookup failure returns 503 instead of 402 pro_required", async 
   });
 });
 
+test("UUID case alias fallback recovers from 404 and charges credits", async () => {
+  const installId = "4fe801cb-efb2-4f49-9b6c-6dbd7b027a1b";
+  const aliasId = installId.toUpperCase();
+  const token = makeToken(installId);
+  const testEnv = { ...env };
+
+  await withMockedFetch([
+    {
+      match: `customers/${aliasId}/virtual_currencies/transactions`,
+      body: { object: "list", items: [{ object: "virtual_currency_balance", currency_code: "credit", balance: 749 }] }
+    },
+    {
+      match: `customers/${installId}/virtual_currencies/transactions`,
+      status: 404,
+      body: { error: "customer_not_found" }
+    },
+    {
+      matchEnd: `customers/${aliasId}/virtual_currencies`,
+      body: { object: "list", items: [{ object: "virtual_currency_balance", currency_code: "credit", balance: 750 }] }
+    },
+    {
+      matchEnd: `customers/${installId}/virtual_currencies`,
+      status: 404,
+      body: { error: "customer_not_found" }
+    },
+    {
+      matchEnd: `customers/${aliasId}`,
+      body: { object: "customer", id: aliasId, active_entitlements: { object: "list", items: [{ object: "customer.active_entitlement", entitlement_id: "pro", expires_at: null }] } }
+    },
+    {
+      matchEnd: `customers/${installId}`,
+      status: 404,
+      body: { error: "customer_not_found" }
+    },
+    {
+      match: "api.openai.com",
+      body: { choices: [{ message: { content: JSON.stringify({ bullets: ["AI generated summary"] }) } }] }
+    }
+  ], async () => {
+    const response = await worker.fetch(
+      new Request("https://example.com/v1/ai/summary", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          authorization: `Bearer ${token}`
+        },
+        body: JSON.stringify({ storyId: 77777, title: "Test", text: "Test content" })
+      }),
+      testEnv
+    );
+
+    assert.equal(response.status, 200);
+    const payload = await response.json();
+    assert.equal(payload.result, "• AI generated summary");
+    assert.equal(payload.creditsUsed, 1);
+    assert.equal(payload.balanceAfter, 749);
+  });
+});
+
 test("credit balance lookup failure returns 503 instead of 402 insufficient_credits", async () => {
   const installId = "install-balance-fail";
   const token = makeToken(installId);
@@ -549,8 +608,8 @@ test("credits endpoint returns balance and pro status", async () => {
     assert.ok(payload.costs);
     assert.equal(payload.costs.summary, 1);
     assert.equal(payload.costs.translation, 1);
-    assert.equal(payload.costs.explain_simple, 6);
-    assert.equal(payload.costs.explain_technical, 10);
+    assert.equal(payload.costs.explain_technical, 6);
+    assert.equal("explain_simple" in payload.costs, false);
     assert.equal("video" in payload.costs, false);
   });
 });

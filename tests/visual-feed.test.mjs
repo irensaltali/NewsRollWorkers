@@ -12,6 +12,7 @@ function readyRow(storyId = 99999999) {
     sourceEndpoint: "front",
     publishedAt: "2026-03-12T12:00:00.000Z",
     mediaUrl: "https://cdn.example.com/story.jpg",
+    sourceUrl: `https://example.com/articles/${storyId}`,
     readableUrl: `https://newsroll.invalid/v1/stories/${storyId}/article`,
     mediaStatus: "ready"
   };

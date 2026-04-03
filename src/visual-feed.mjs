@@ -36,6 +36,7 @@ export function makePublishedVisualFeedRow(env, payload) {
     sourceEndpoint: payload.sourceEndpoint,
     publishedAt: payload.publishedAt,
     mediaUrl: payload.mediaUrl,
+    sourceUrl: payload.sourceUrl ?? null,
     mediaStatus: payload.mediaStatus ?? "ready",
     readableUrl: payload.readableUrl ?? readableUrlFor(env, payload.storyId),
     headline: payload.headline ?? null
@@ -50,6 +51,7 @@ export function toVisualFeedItem(env, row) {
     sourceEndpoint: row.sourceEndpoint,
     publishedAt: row.publishedAt,
     mediaUrl: row.mediaUrl ?? null,
+    sourceUrl: row.sourceUrl ?? null,
     readableUrl: row.readableUrl ?? readableUrlFor(env, row.storyId),
     mediaStatus: row.mediaStatus ?? "ready",
     headline: row.headline ?? null

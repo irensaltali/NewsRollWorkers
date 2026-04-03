@@ -7,6 +7,9 @@ import {
   hasAIRequestReceipt,
   listPublishedVisualFeed,
   storeStoryExplanation,
+  storeStoryExplanationData,
+  getStoryExplanationData,
+  getStorySummaryAndContent,
   storeStorySummary,
   storeAIRequestReceipt,
   storeCachedAIResult
@@ -23,7 +26,7 @@ import {
   toVisualFeedItem
 } from "./visual-feed.mjs";
 import { validateEventBatch, storeEvents } from "./events.mjs";
-import { processAIRequest, authorizeAIRequest, ensureAIRequestBalance, finalizeAIRequestCharge, CREDIT_COSTS } from "./credits.mjs";
+import { authorizeAIRequest, ensureAIRequestBalance, finalizeAIRequestCharge, CREDIT_COSTS } from "./credits.mjs";
 import {
   formatExplainResult,
   generateSummary,
@@ -243,7 +246,9 @@ async function handleStructuredCachedAIRequest(request, env, {
   toResponsePayload,
   resultType = actionKey,
   provider = "openai",
-  persistResult = null
+  persistResult = null,
+  dbLookup = null,
+  cacheDelay = 0
 }) {
   const user = await requireUser(request, env);
   const userErr = guardUser(user);
@@ -280,10 +285,48 @@ async function handleStructuredCachedAIRequest(request, env, {
     if (balanceError) return balanceError;
   }
 
+  // DB-first lookup (persistent storage beyond cache TTL)
+  if (typeof dbLookup === "function") {
+    const dbPayload = await dbLookup(payload);
+    if (dbPayload) {
+      log.info({ event: "ai_db_hit", action: actionKey, storyId: payload.storyId });
+      if (cacheDelay > 0) {
+        await new Promise((r) => setTimeout(r, cacheDelay));
+      }
+      await createPromptRunEvent(env, {
+        source: "app_api",
+        promptKind: "ai",
+        promptKey: actionKey,
+        provider,
+        model: AI_ACTIONS[actionKey].model,
+        modality: "text",
+        status: "cached",
+        latencyMs: cacheDelay,
+        cacheHit: true,
+        requestExcerpt: JSON.stringify(payload).slice(0, 500),
+        responseExcerpt: JSON.stringify(dbPayload).slice(0, 500),
+        storyId: payload.storyId
+      });
+
+      if (alreadyCharged) {
+        return json({ ...dbPayload, creditsUsed: 0, balanceAfter: null, cached: true, charged: false });
+      }
+      const charge = await finalizeAIRequestCharge(env, revenueCatAppUserId, actionKey, cacheKeyFor(payload), auth.cost);
+      const chargeError = aiBillingError(charge);
+      if (chargeError) return chargeError;
+      await storeAIRequestReceipt(env, receiptKey);
+      return json({ ...dbPayload, creditsUsed: auth.cost, balanceAfter: charge.balance, cached: true, charged: true });
+    }
+  }
+
   const cacheKey = cacheKeyFor(payload);
   const cached = await getCachedAIResult(env, cacheKey);
   const cachedPayload = cached ? parseCached(cached.resultText) : null;
   if (cachedPayload) {
+    log.info({ event: "ai_cache_hit", action: actionKey, storyId: payload.storyId });
+    if (cacheDelay > 0) {
+      await new Promise((r) => setTimeout(r, cacheDelay));
+    }
     await createPromptRunEvent(env, {
       source: "app_api",
       promptKind: "ai",
@@ -292,28 +335,21 @@ async function handleStructuredCachedAIRequest(request, env, {
       model: AI_ACTIONS[actionKey].model,
       modality: "text",
       status: "cached",
-      latencyMs: 0,
+      latencyMs: cacheDelay,
       cacheHit: true,
       requestExcerpt: JSON.stringify(payload).slice(0, 500),
       responseExcerpt: JSON.stringify(cachedPayload).slice(0, 500),
       storyId: payload.storyId
     });
 
-    let charge = null;
-    if (!alreadyCharged) {
-      charge = await finalizeAIRequestCharge(env, revenueCatAppUserId, actionKey, cacheKey, auth.cost);
-      const chargeError = aiBillingError(charge);
-      if (chargeError) return chargeError;
-      await storeAIRequestReceipt(env, receiptKey);
+    if (alreadyCharged) {
+      return json({ ...cachedPayload, creditsUsed: 0, balanceAfter: null, cached: true, charged: false });
     }
-
-    return json({
-      ...cachedPayload,
-      creditsUsed: alreadyCharged ? 0 : auth.cost,
-      balanceAfter: alreadyCharged ? null : charge.balance,
-      cached: true,
-      charged: !alreadyCharged
-    });
+    const charge = await finalizeAIRequestCharge(env, revenueCatAppUserId, actionKey, cacheKey, auth.cost);
+    const chargeError = aiBillingError(charge);
+    if (chargeError) return chargeError;
+    await storeAIRequestReceipt(env, receiptKey);
+    return json({ ...cachedPayload, creditsUsed: auth.cost, balanceAfter: charge.balance, cached: true, charged: true });
   }
 
   const result = await generate(payload);
@@ -360,13 +396,7 @@ async function handleStructuredCachedAIRequest(request, env, {
   });
 
   if (alreadyCharged) {
-    return json({
-      ...responsePayload,
-      creditsUsed: 0,
-      balanceAfter: null,
-      cached: false,
-      charged: false
-    });
+    return json({ ...responsePayload, creditsUsed: 0, balanceAfter: null, cached: false, charged: false });
   }
 
   const charge = await finalizeAIRequestCharge(env, revenueCatAppUserId, actionKey, cacheKey, auth.cost);
@@ -374,13 +404,7 @@ async function handleStructuredCachedAIRequest(request, env, {
   if (chargeError) return chargeError;
   await storeAIRequestReceipt(env, receiptKey);
 
-  return json({
-    ...responsePayload,
-    creditsUsed: auth.cost,
-    balanceAfter: charge.balance,
-    cached: false,
-    charged: true
-  });
+  return json({ ...responsePayload, creditsUsed: auth.cost, balanceAfter: charge.balance, cached: false, charged: true });
 }
 
 function revenueCatAppUserIdForUser(user) {
@@ -467,25 +491,6 @@ async function handleVisualFeed(request, env) {
   const limit = parseVisualFeedLimit(env, url.searchParams.get("limit"));
   const user = await userContext(request, env);
 
-  if (user?.userId && env?.SUPABASE_URL) {
-    const result = await generateRecommendedFeed(env, user.userId, {
-      cursor: cursorValue,
-      limit
-    });
-
-    if (!result.coldStart) {
-      return json({
-        cursor: cursorValue ?? null,
-        nextCursor: result.nextCursor ?? null,
-        items: (result.items ?? []).map((item) => toVisualFeedItem(env, item))
-      }, {
-        headers: {
-          "cache-control": "private, max-age=0, no-store"
-        }
-      });
-    }
-  }
-
   if (cursor == null) {
     const snapshot = await readVisualFeedSnapshot(env);
     if (snapshot?.length) {
@@ -535,40 +540,65 @@ async function handleAISummary(request, env) {
   const userErr = guardUser(user);
   if (userErr) return userErr;
   const body = (await readJson(request)) ?? {};
-  const storyId = body.storyId;
+  const storyId = Number(body.storyId);
   if (!storyId) return error("storyId is required", 422);
 
-  const cacheKey = `summary:${storyId}`;
   const revenueCatAppUserId = revenueCatAppUserIdForUser(user);
-  const gate = await processAIRequest(env, revenueCatAppUserId, "summary", cacheKey);
-  const gateError = aiBillingError(gate);
-  if (gateError) return gateError;
 
-  const provider = await resolveAIProvider(env, "summary");
+  // Pro + balance check (balance only if not already charged)
+  const auth = await authorizeAIRequest(env, revenueCatAppUserId, "summary", { requireBalance: false });
+  const authError = aiBillingError(auth);
+  if (authError) return authError;
 
-  if (gate.cached) {
+  // Receipt-based dedup: never charge same user twice for the same story's summary
+  const receiptKey = { subscriberId: revenueCatAppUserId, action: "summary", storyId, targetLanguage: null, contentHash: "" };
+  const alreadyCharged = await hasAIRequestReceipt(env, receiptKey);
+  log.info({ event: "ai_summary_receipt_check", storyId, subscriberId: revenueCatAppUserId, alreadyCharged });
+
+  if (!alreadyCharged) {
+    const balanceGate = await ensureAIRequestBalance(env, revenueCatAppUserId, "summary");
+    const balanceError = aiBillingError(balanceGate);
+    if (balanceError) return balanceError;
+  }
+
+  // DB-first: check story_content.summary
+  const stored = await getStorySummaryAndContent(env, storyId);
+  log.info({ event: "ai_summary_db_check", storyId, hasSummary: Boolean(stored?.summary), hasExtractedText: Boolean(stored?.extractedText) });
+
+  if (stored?.summary) {
+    log.info({ event: "ai_summary_db_hit", storyId, source: "story_content.summary" });
+    await new Promise((r) => setTimeout(r, 500)); // fake delay for DB hit
     await createPromptRunEvent(env, {
       source: "app_api",
       promptKind: "ai",
       promptKey: "summary",
-      provider,
+      provider: "openai",
       model: AI_ACTIONS.summary.model,
       modality: "text",
       status: "cached",
-      latencyMs: 0,
+      latencyMs: 500,
       cacheHit: true,
-      requestExcerpt: JSON.stringify({ storyId, title: body.title ?? "" }).slice(0, 500),
-      responseExcerpt: String(gate.result ?? "").slice(0, 500),
+      requestExcerpt: JSON.stringify({ storyId }).slice(0, 500),
+      responseExcerpt: String(stored.summary).slice(0, 500),
       storyId
     });
-    const charge = await finalizeAIRequestCharge(env, revenueCatAppUserId, "summary", cacheKey, gate.cost);
+    if (alreadyCharged) {
+      return json({ result: stored.summary, creditsUsed: 0, balanceAfter: null, cached: true, charged: false });
+    }
+    const charge = await finalizeAIRequestCharge(env, revenueCatAppUserId, "summary", `summary:${storyId}`, auth.cost);
     const chargeError = aiBillingError(charge);
     if (chargeError) return chargeError;
-    return json({ result: gate.result, creditsUsed: gate.cost, balanceAfter: charge.balance, cached: true });
+    await storeAIRequestReceipt(env, receiptKey);
+    return json({ result: stored.summary, creditsUsed: auth.cost, balanceAfter: charge.balance, cached: true, charged: true });
+  }
+
+  if (!hasOpenAIConfig(env)) {
+    return error("AI provider unavailable", 503, { code: "ai_provider_unavailable", provider: "openai" });
   }
 
   let result;
   let summaryTitle = body.title ?? "";
+  const provider = await resolveAIProvider(env, "summary");
 
   if (provider === "cloudflare") {
     const articleUrl = await resolveArticleUrl(env, storyId, { url: body.url ?? null });
@@ -576,14 +606,18 @@ async function handleAISummary(request, env) {
       result = await generateSummaryViaCrawl(env, articleUrl, storyId, summaryTitle);
     } else {
       log.info({ event: "provider_fallback", provider: "cloudflare", fallback: "openai", reason: "no_url", storyId });
-      const article = await resolveArticleContent(env, storyId, { title: summaryTitle, text: body.text ?? "", url: null });
+      const textToUse = stored?.extractedText || body.text || "";
+      const article = textToUse
+        ? { title: summaryTitle, text: textToUse }
+        : await resolveArticleContent(env, storyId, { title: summaryTitle, text: "", url: null });
       summaryTitle = article.title || summaryTitle;
       result = await generateSummary(env, storyId, summaryTitle, article.text);
     }
+  } else if (stored?.extractedText) {
+    // Use extracted_text from DB instead of crawling
+    log.info({ event: "ai_summary_using_extracted_text", storyId, textLength: stored.extractedText.length });
+    result = await generateSummary(env, storyId, summaryTitle, stored.extractedText);
   } else {
-    if (!hasOpenAIConfig(env)) {
-      return error("AI provider unavailable", 503, { code: "ai_provider_unavailable", provider: "openai" });
-    }
     const article = await resolveArticleContent(env, storyId, { title: summaryTitle, text: body.text ?? "", url: body.url ?? null });
     summaryTitle = article.title || summaryTitle;
     result = await generateSummary(env, storyId, summaryTitle, article.text);
@@ -605,13 +639,8 @@ async function handleAISummary(request, env) {
     return error("AI generation failed", 502);
   }
 
-  await storeCachedAIResult(env, { cacheKey, resultType: "summary", storyId, resultText: result, model: AI_ACTIONS.summary.model });
-  await storeStorySummary(env, {
-    storyId,
-    sourceUrl: body.url ?? null,
-    summary: result,
-    updatedAt: now()
-  });
+  // Persist to story_content.summary for future DB-first hits
+  await storeStorySummary(env, { storyId, sourceUrl: body.url ?? null, summary: result, updatedAt: now() });
   await createPromptRunEvent(env, {
     source: "app_api",
     promptKind: "ai",
@@ -624,10 +653,15 @@ async function handleAISummary(request, env) {
     responseExcerpt: String(result).slice(0, 500),
     storyId
   });
-  const charge = await finalizeAIRequestCharge(env, revenueCatAppUserId, "summary", cacheKey, gate.cost);
+
+  if (alreadyCharged) {
+    return json({ result, creditsUsed: 0, balanceAfter: null, cached: false, charged: false });
+  }
+  const charge = await finalizeAIRequestCharge(env, revenueCatAppUserId, "summary", `summary:${storyId}`, auth.cost);
   const chargeError = aiBillingError(charge);
   if (chargeError) return chargeError;
-  return json({ result, creditsUsed: gate.cost, balanceAfter: charge.balance, cached: false });
+  await storeAIRequestReceipt(env, receiptKey);
+  return json({ result, creditsUsed: auth.cost, balanceAfter: charge.balance, cached: false, charged: true });
 }
 
 async function handleAITranslate(request, env) {
@@ -773,8 +807,8 @@ async function handleAITranslate(request, env) {
 
 async function handleAIExplain(request, env) {
   const body = (await readJson(request.clone())) ?? {};
-  const level = normalizeText(body.level).toLowerCase() === "simple" ? "simple" : "technical";
-  const actionKey = level === "simple" ? "explain_simple" : "explain_technical";
+  // Always use technical (advanced) explain — simple mode is removed
+  const actionKey = "explain_technical";
   const provider = await resolveAIProvider(env, actionKey);
 
   return handleStructuredCachedAIRequest(request, env, {
@@ -786,7 +820,7 @@ async function handleAIExplain(request, env) {
       if (provider === "cloudflare") {
         const articleUrl = await resolveArticleUrl(env, storyId, { url: body.url ?? null });
         if (articleUrl) {
-          return buildExplainPayload({ ...body, storyId, title: body.title ?? "", text: "", url: articleUrl, level, _cfCrawl: true }, level);
+          return buildExplainPayload({ ...body, storyId, title: body.title ?? "", text: "", url: articleUrl, level: "technical", _cfCrawl: true }, "technical");
         }
         log.info({ event: "provider_fallback", provider: "cloudflare", fallback: "openai", reason: "no_url", storyId, action: actionKey });
       }
@@ -796,7 +830,7 @@ async function handleAIExplain(request, env) {
         text: body.text ?? "",
         url: body.url ?? null
       });
-      return buildExplainPayload({ ...body, storyId, title: article.title || (body.title ?? ""), text: article.text, level }, level);
+      return buildExplainPayload({ ...body, storyId, title: article.title || (body.title ?? ""), text: article.text, level: "technical" }, "technical");
     },
     validatePayload: (payload) => {
       if (!payload.storyId) return "storyId is required";
@@ -819,7 +853,9 @@ async function handleAIExplain(request, env) {
       level: result.level,
       contentHash: payload.contentHash
     }),
-    persistResult: async (payload, result) => {
+    persistResult: async (payload, result, responsePayload) => {
+      // Save structured JSON for permanent DB-first lookup
+      await storeStoryExplanationData(env, payload.storyId, responsePayload);
       await storeStoryExplanation(env, {
         storyId: payload.storyId,
         sourceUrl: payload.url ?? body.url ?? null,
@@ -827,6 +863,20 @@ async function handleAIExplain(request, env) {
         updatedAt: now()
       });
     },
+    dbLookup: async (payload) => {
+      const stored = await getStoryExplanationData(env, payload.storyId);
+      if (!stored) return null;
+      if (!stored.title || !Array.isArray(stored.sections) || !stored.sections.length) return null;
+      log.info({ event: "ai_explain_db_hit", storyId: payload.storyId });
+      return {
+        title: stored.title,
+        sections: stored.sections,
+        followUps: stored.followUps ?? [],
+        level: stored.level ?? "technical",
+        contentHash: payload.contentHash
+      };
+    },
+    cacheDelay: 1000,
     resultType: actionKey
   });
 }

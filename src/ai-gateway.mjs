@@ -248,7 +248,7 @@ export async function generateTranslation(env, text, targetLanguage) {
 }
 
 export async function generateExplain(env, payload, options = {}) {
-  const action = payload.level === "simple" ? AI_ACTIONS.explain_simple : AI_ACTIONS.explain_technical;
+  const action = AI_ACTIONS.explain_technical;
   const promptConfig = await resolvePromptConfig(env, action.key, options.promptConfig);
   const response = await callOpenAIStructured(env, {
     model: promptConfig.model ?? action.model,
@@ -439,7 +439,7 @@ export async function generateSummaryViaCrawl(env, url, storyId, title, options 
 }
 
 export async function generateExplainViaCrawl(env, url, storyId, title, level, options = {}) {
-  const action = level === "simple" ? AI_ACTIONS.explain_simple : AI_ACTIONS.explain_technical;
+  const action = AI_ACTIONS.explain_technical;
   const promptConfig = await resolvePromptConfig(env, action.key, options.promptConfig);
   const prompt = `${promptConfig.systemPrompt}\n\nTitle: ${title}\nExplanation level: ${level}`;
 

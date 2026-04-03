@@ -130,17 +130,9 @@ export const AI_ACTIONS = Object.freeze({
     maxTokens: 16000,
     cacheTtlMs: 3 * 24 * 60 * 60 * 1000
   }),
-  explain_simple: Object.freeze({
-    key: "explain_simple",
-    cost: 6,
-    model: "o4-mini",
-    maxTokens: 4000,
-    cacheTtlMs: 3 * 24 * 60 * 60 * 1000,
-    schema: EXPLAIN_SCHEMA
-  }),
   explain_technical: Object.freeze({
     key: "explain_technical",
-    cost: 10,
+    cost: 6,
     model: "o4-mini",
     maxTokens: 4000,
     cacheTtlMs: 3 * 24 * 60 * 60 * 1000,
