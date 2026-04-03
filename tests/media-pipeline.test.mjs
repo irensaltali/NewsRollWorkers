@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { buildFalImageRequest, dailyMediaLimit, mediaPerRunLimit, meetsMediaQualityGate, needsMediaCrawl, processMediaMessage, shapedCategoryFromTopics } from "../src/media-pipeline.mjs";
+import { buildFalImageRequest, dailyMediaLimit, mediaPerRunLimit, meetsMediaQualityGate, needsMediaCrawl, processMediaMessage } from "../src/media-pipeline.mjs";
 import { publicMediaUrlFor, MEDIA_DAILY_LIMIT_DEFAULT, MEDIA_MAX_QUEUE_RETRIES, MEDIA_MIN_SCORE_DEFAULT, MEDIA_PER_RUN_LIMIT_DEFAULT } from "../src/config.mjs";
 import { cleanupStaleMedia } from "../src/db.mjs";
 import { mediaTemplateWithFallback } from "../src/prompt-config.mjs";
@@ -83,11 +83,6 @@ test("needsMediaCrawl only requests a crawl when the message has a URL and no ca
   assert.equal(needsMediaCrawl({ url: null }, { text: "" }), false);
 });
 
-test("shapedCategoryFromTopics prefers crawled topics over the RSS endpoint", () => {
-  assert.deepEqual(shapedCategoryFromTopics(["ai", "privacy"], "tech"), ["ai", "privacy"]);
-  assert.equal(shapedCategoryFromTopics(null, "tech"), "tech");
-  assert.equal(shapedCategoryFromTopics([], "tech"), "tech");
-});
 
 test("processMediaMessage stops when crawl metadata is missing", async () => {
   let acked = false;

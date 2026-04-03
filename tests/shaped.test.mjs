@@ -31,15 +31,14 @@ test("upsertItem sends item rows to the Shaped insert endpoint", async () => {
           created_at: "2025-01-01T00:00:00.000Z",
           updated_at: "2025-01-01T00:00:00.000Z",
           headline: null,
+          title: null,
           category: null,
-          source_endpoint: null,
+          topics: null,
           media_url: null,
           media_type: null,
           media_provider: null,
           media_model: null,
-          prompt_template_id: null,
-          prompt_template_name: null,
-          duplicate_cluster_size: 1
+          prompt_template_id: null
         }
       ]
     });
@@ -67,13 +66,15 @@ test("upsertItem flattens crawled topic arrays into the Shaped category field", 
   };
 
   await withMockedFetch(async (_input, init) => {
-    assert.equal(JSON.parse(init.body).data[0].category, "ai, startups, funding");
+    const item = JSON.parse(init.body).data[0];
+    assert.deepEqual(item.topics, ["ai", "startups", "funding"]);
+    assert.equal(item.category, "business");
     return new Response("", { status: 200 });
   }, async () => {
     const result = await upsertItem(env, {
       storyId: 456,
-      category: ["ai", "startups", "funding"],
-      sourceEndpoint: "business"
+      topics: ["ai", "startups", "funding"],
+      category: "business"
     });
     assert.deepEqual(result, { ok: true });
   });
@@ -104,7 +105,7 @@ test("trackEvents sends interaction rows to the Shaped insert endpoint", async (
           feed_mode: null,
           dwell_ms: null,
           media_type: null,
-          source_endpoint: null,
+          topics: null,
           ai_action: null
         }
       ]

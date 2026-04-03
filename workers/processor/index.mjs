@@ -23,7 +23,7 @@ export default {
     return new Response("Not Found", { status: 404 });
   },
 
-  async queue(batch, env) {
+  async queue(batch, env, ctx) {
     log.info({ event: "queue_batch_start", queue: batch.queue, count: batch.messages.length });
     const start = Date.now();
 
@@ -38,7 +38,7 @@ export default {
     }
 
     if (mediaMessages.length > 0) {
-      await processMediaMessage({ ...batch, messages: mediaMessages }, env);
+      await processMediaMessage({ ...batch, messages: mediaMessages }, env, ctx);
     }
 
     log.info({ event: "queue_batch_complete", queue: batch.queue, count: batch.messages.length, durationMs: Date.now() - start });

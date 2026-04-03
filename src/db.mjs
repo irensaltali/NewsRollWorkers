@@ -422,18 +422,25 @@ export async function attachStoryContextToEvents(env, events) {
     return events;
   }
 
-  const { data } = await getDB(env)
-    .from("published_feed_entries")
-    .select("story_id, source_endpoint, media_type")
-    .in("story_id", storyIds);
+  const [{ data: feedData }, { data: contentData }, { data: mediaData }] = await Promise.all([
+    getDB(env).from("published_feed_entries").select("story_id, source_endpoint, media_type").in("story_id", storyIds),
+    getDB(env).from("story_content").select("story_id, topics").in("story_id", storyIds),
+    getDB(env).from("story_media").select("story_id, media_type").in("story_id", storyIds)
+  ]);
 
-  const byStoryId = new Map((data ?? []).map((row) => [row.story_id, row]));
+  const byStoryId = new Map((feedData ?? []).map((row) => [row.story_id, row]));
+  const contentByStoryId = new Map((contentData ?? []).map((row) => [row.story_id, row]));
+  const mediaByStoryId = new Map((mediaData ?? []).map((row) => [row.story_id, row]));
+
   return events.map((event) => {
     const story = byStoryId.get(event.storyId);
+    const content = contentByStoryId.get(event.storyId);
+    const media = mediaByStoryId.get(event.storyId);
     return {
       ...event,
       sourceEndpoint: event.sourceEndpoint ?? story?.source_endpoint ?? null,
-      mediaType: event.mediaType ?? story?.media_type ?? null
+      mediaType: event.mediaType ?? story?.media_type ?? media?.media_type ?? null,
+      topics: Array.isArray(content?.topics) && content.topics.length > 0 ? content.topics : null
     };
   });
 }

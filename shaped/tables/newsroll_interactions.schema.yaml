@@ -14,5 +14,5 @@ column_schema:
   feed_mode: String
   dwell_ms: Int32
   media_type: String
-  source_endpoint: String
+  topics: List[String]
   ai_action: String

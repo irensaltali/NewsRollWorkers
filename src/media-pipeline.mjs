@@ -161,15 +161,7 @@ function maxQueueRetries(env) {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : MEDIA_MAX_QUEUE_RETRIES;
 }
 
-export function shapedCategoryFromTopics(topics, fallbackCategory = null) {
-  if (Array.isArray(topics) && topics.some((topic) => typeof topic === "string" && topic.trim())) {
-    return topics;
-  }
-
-  return fallbackCategory;
-}
-
-export async function processMediaMessage(batch, env) {
+export async function processMediaMessage(batch, env, ctx = null) {
   const maxRetries = maxQueueRetries(env);
 
   const MAX_CRAWL_WAITS = 5;
@@ -545,20 +537,22 @@ export async function processMediaMessage(batch, env) {
         });
 
         if (publication.published) {
-          await shaped.upsertItem(env, {
+          const shapedPromise = shaped.upsertItem(env, {
             storyId: body.storyId,
             headline,
-            category: shapedCategoryFromTopics(topics, body.endpoint),
-            sourceEndpoint: body.endpoint,
+            title,
+            category: body.endpoint,
+            topics: topics ?? null,
             publishedAt: now,
             mediaUrl,
             mediaType: "image",
             mediaProvider: result.provider ?? template.provider ?? "fal",
             mediaModel: result.model ?? template.model ?? null,
-            generationLatencyMs: generationDurationMs,
-            promptTemplateId: template?.id ?? null,
-            promptTemplateName: template?.name ?? null
+            promptTemplateId: template?.id ?? null
           });
+          if (ctx) {
+            ctx.waitUntil(shapedPromise);
+          }
         }
       } else {
         log.debug({

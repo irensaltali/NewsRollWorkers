@@ -22,20 +22,10 @@ function interactionsTable(env) {
   return env?.SHAPED_INTERACTIONS_TABLE ?? DEFAULT_INTERACTIONS_TABLE;
 }
 
-function normalizeCategory(category) {
-  if (Array.isArray(category)) {
-    const topics = category
-      .filter((value) => typeof value === "string" && value.trim())
-      .map((value) => value.trim());
-    return topics.length > 0 ? topics.join(", ") : null;
-  }
-
-  if (typeof category === "string") {
-    const trimmed = category.trim();
-    return trimmed || null;
-  }
-
-  return null;
+function normalizeTopics(value) {
+  if (!Array.isArray(value)) return null;
+  const topics = value.filter((v) => typeof v === "string" && v.trim()).map((v) => v.trim());
+  return topics.length > 0 ? topics : null;
 }
 
 function buildInsertPayload(rows) {
@@ -56,16 +46,16 @@ export async function upsertItem(env, item) {
       item_id: String(item.storyId),
       created_at: item.publishedAt ?? new Date().toISOString(),
       updated_at: new Date().toISOString(),
-      headline: item.headline ?? null,
-      category: normalizeCategory(item.category) ?? item.sourceEndpoint ?? null,
-      source_endpoint: item.sourceEndpoint ?? null,
+      // headline: AI-extracted; title: RSS original — Shaped uses COALESCE(headline, title) for embeddings
+      headline: item.headline ?? item.title ?? null,
+      title: item.title ?? null,
+      category: typeof item.category === "string" && item.category.trim() ? item.category.trim() : null,
+      topics: normalizeTopics(item.topics),
       media_url: item.mediaUrl ?? null,
       media_type: item.mediaType ?? null,
       media_provider: item.mediaProvider ?? null,
       media_model: item.mediaModel ?? null,
       prompt_template_id: item.promptTemplateId ?? null,
-      prompt_template_name: item.promptTemplateName ?? null,
-      duplicate_cluster_size: item.duplicateClusterSize ?? 1,
     };
 
     const url = `${SHAPED_BASE_URL}/v2/tables/${itemsTable(env)}/insert`;
@@ -116,7 +106,7 @@ export async function trackEvents(env, userId, events) {
         feed_mode: e.feedMode ?? null,
         dwell_ms: e.dwellMs ?? null,
         media_type: e.mediaType ?? null,
-        source_endpoint: e.sourceEndpoint ?? null,
+        topics: normalizeTopics(e.topics),
         ai_action: e.aiAction ?? null
       }));
 
