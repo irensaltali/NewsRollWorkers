@@ -462,6 +462,48 @@ export async function crawlUrlWithAI(env, url, { storyId = null, limit = DEFAULT
   }
 }
 
+export async function submitCrawlJob(env, url) {
+  try {
+    const { accountId, apiToken } = getCloudflareCrawlConfig(env);
+    const jobId = await createCrawlJob(accountId, apiToken, url);
+    log.info({ event: "crawl_job_submitted", url, jobId });
+    return { jobId, success: true };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    log.error({ event: "crawl_job_submit_error", url, error: message });
+    return { jobId: null, success: false, error: message };
+  }
+}
+
+export async function checkCrawlJobStatus(env, jobId) {
+  try {
+    const { accountId, apiToken } = getCloudflareCrawlConfig(env);
+    let result = await fetchCrawlJob(accountId, apiToken, jobId, { limit: 1 });
+
+    if (result?.status === "running") {
+      return { status: "running" };
+    }
+
+    if (result?.status !== "completed") {
+      return { status: "failed", error: `Crawl job ended with status: ${result?.status ?? "unknown"}` };
+    }
+
+    if (!Array.isArray(result?.records) || result.records.length === 0) {
+      result = await fetchCrawlJob(accountId, apiToken, jobId, { status: "completed", limit: 1 });
+    }
+
+    const { markdown } = readCrawlMarkdown(result, null);
+    const { json } = readCrawlJson(result, null);
+    const metadata = normalizeArticleMetadata(json);
+
+    return { status: "completed", markdown: markdown ?? null, metadata: metadata ?? null };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    log.error({ event: "crawl_job_status_error", jobId, error: message });
+    return { status: "failed", error: message };
+  }
+}
+
 export async function crawlUrl(env, url, { storyId = null, limit = DEFAULT_CRAWL_LIMIT } = {}) {
   log.info({ event: "crawl_start", url });
 

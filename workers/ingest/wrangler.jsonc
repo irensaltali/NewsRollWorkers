@@ -10,6 +10,7 @@
 	// - SUPABASE_SECRET_KEY
 	// - OPENAI_API_KEY
 	// - SHAPED_API_KEY
+	// - CLOUDFLARE_API_TOKEN
 	"vars": {
 		"APP_NAME": "NewsRoll Ingest",
 		"ENVIRONMENT": "production",

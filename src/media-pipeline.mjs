@@ -9,7 +9,8 @@ import {
   reserveMediaQueueSlot,
   releaseMediaQueueSlot,
   getRSSSourceIdByStoryId,
-  setRSSSourceActive
+  setRSSSourceActive,
+  storeReadableContent
 } from "./db.mjs";
 import {
   publicMediaUrlFor,
@@ -27,7 +28,7 @@ import * as shaped from "./shaped.mjs";
 import { readableUrlFor } from "./visual-feed.mjs";
 import { buildFalImageRequest, generateImageWithProvider } from "./media-generation.mjs";
 import { buildPromptInput, clipPromptText, mediaTemplateWithFallback } from "./prompt-config.mjs";
-import { crawlUrl } from "./browser-rendering.mjs";
+import { crawlUrl, submitCrawlJob, checkCrawlJobStatus } from "./browser-rendering.mjs";
 
 export { buildFalImageRequest } from "./media-generation.mjs";
 
@@ -111,13 +112,29 @@ async function enqueueStoryForMedia(env, endpoint, story) {
   }
 
   try {
+    let crawlJobId = null;
+    let sendOptions = undefined;
+
+    if (story.url) {
+      const crawlSubmit = await submitCrawlJob(env, story.url);
+      if (crawlSubmit.success) {
+        crawlJobId = crawlSubmit.jobId;
+        sendOptions = { delaySeconds: 180 };
+        log.debug({ event: "media_enqueue_crawl_submitted", storyId: story.id, crawlJobId });
+      } else {
+        log.warn({ event: "media_enqueue_crawl_submit_fail", storyId: story.id, error: crawlSubmit.error });
+      }
+    }
+
     await env.MEDIA_QUEUE.send({
       storyId: story.id,
       endpoint,
       url: story.url ?? null,
-      title: story.title ?? ""
-    });
-    log.debug({ event: "media_enqueue_ok", storyId: story.id, endpoint });
+      title: story.title ?? "",
+      crawlJobId,
+      crawlAttempts: 0
+    }, sendOptions);
+    log.debug({ event: "media_enqueue_ok", storyId: story.id, endpoint, crawlJobId, delayed: Boolean(sendOptions) });
     return true;
   } catch (err) {
     await releaseMediaQueueSlot(env, story.id);
@@ -145,10 +162,66 @@ function maxQueueRetries(env) {
 export async function processMediaMessage(batch, env) {
   const maxRetries = maxQueueRetries(env);
 
+  const MAX_CRAWL_WAITS = 5;
+
   for (const message of batch.messages) {
     const storyId = message.body?.storyId;
     const attempt = message.attempts ?? 0;
     const msgStart = Date.now();
+
+    // Crawl-wait gate: if a crawl job was pre-submitted by ingest, check its status first
+    if (message.body?.crawlJobId) {
+      const crawlJobId = message.body.crawlJobId;
+      const crawlAttempts = message.body.crawlAttempts ?? 0;
+      const crawlCheck = await checkCrawlJobStatus(env, crawlJobId);
+
+      if (crawlCheck.status === "running") {
+        if (crawlAttempts >= MAX_CRAWL_WAITS) {
+          log.error({ event: "media_msg_dead_letter", storyId, reason: "crawl_wait_exhausted", crawlAttempts });
+          await upsertMedia(env, {
+            storyId,
+            status: "dead_letter",
+            falRequestId: null,
+            mediaKey: null,
+            mediaUrl: null,
+            failureReason: `Crawl job did not complete after ${MAX_CRAWL_WAITS} waits`,
+            attempts: attempt,
+            updatedAt: new Date().toISOString(),
+            promptTemplateId: null,
+            imagePrompt: null
+          });
+          message.ack();
+          continue;
+        }
+        await env.MEDIA_QUEUE.send(
+          { ...message.body, crawlAttempts: crawlAttempts + 1 },
+          { delaySeconds: 30 }
+        );
+        message.ack();
+        log.info({ event: "crawl_wait_requeue", storyId, crawlJobId, crawlAttempts: crawlAttempts + 1 });
+        continue;
+      }
+
+      if (crawlCheck.status === "completed" && crawlCheck.markdown) {
+        const numericStoryId = Number(storyId);
+        if (Number.isInteger(numericStoryId) && numericStoryId > 0) {
+          try {
+            await storeReadableContent(env, {
+              storyId: numericStoryId,
+              sourceKind: "crawl",
+              extractedText: crawlCheck.markdown,
+              sourceUrl: message.body.url,
+              updatedAt: new Date().toISOString()
+            });
+            log.info({ event: "crawl_job_result_cached", storyId, crawlJobId });
+          } catch (cacheErr) {
+            log.warn({ event: "crawl_job_cache_fail", storyId, ...log.fmtError(cacheErr) });
+          }
+        }
+      } else if (crawlCheck.status === "failed") {
+        log.warn({ event: "crawl_job_failed", storyId, crawlJobId, error: crawlCheck.error ?? "unknown" });
+      }
+    }
 
     if (attempt >= maxRetries) {
       log.error({
@@ -177,6 +250,8 @@ export async function processMediaMessage(batch, env) {
       const body = message.body;
       const now = new Date().toISOString();
       const fallbackText = `${body.title ?? ""} ${body.url ?? ""}`.trim() || "News story";
+      // If a crawl job was pre-submitted, the result is already cached or failed — skip sync crawl
+      const hasCrawlJob = Boolean(body.crawlJobId);
       let resolvedArticle = await resolveArticleContent(env, storyId, {
         title: body.title ?? "",
         url: body.url ?? null
@@ -184,7 +259,7 @@ export async function processMediaMessage(batch, env) {
         allowCrawl: false
       });
 
-      if (needsMediaCrawl(body, resolvedArticle)) {
+      if (!hasCrawlJob && needsMediaCrawl(body, resolvedArticle)) {
         resolvedArticle = await resolveArticleContent(env, storyId, {
           title: body.title ?? "",
           url: body.url ?? null
@@ -222,7 +297,8 @@ export async function processMediaMessage(batch, env) {
         : null;
 
       // If article text came from RSS/cache but metadata was never extracted, crawl for it now
-      if (!crawlMetadata && !resolvedArticle.aiHeadline && body.url) {
+      // Skip if a crawl job was pre-submitted (result already stored or job failed)
+      if (!hasCrawlJob && !crawlMetadata && !resolvedArticle.aiHeadline && body.url) {
         log.info({ event: "metadata_crawl_start", storyId, url: body.url });
         const metaCrawl = await crawlUrl(env, body.url, { storyId });
         if (metaCrawl.success && metaCrawl.metadata) {

@@ -50,6 +50,12 @@
 		}
 	],
 	"queues": {
+		"producers": [
+			{
+				"binding": "MEDIA_QUEUE",
+				"queue": "newsroll-media"
+			}
+		],
 		"consumers": [
 			{
 				"queue": "newsroll-media",
@@ -97,6 +103,12 @@
 				}
 			],
 			"queues": {
+				"producers": [
+					{
+						"binding": "MEDIA_QUEUE",
+						"queue": "newsroll-media-staging"
+					}
+				],
 				"consumers": [
 					{
 						"queue": "newsroll-media-staging",
