@@ -10,7 +10,9 @@ import {
   releaseMediaQueueSlot,
   getRSSSourceIdByStoryId,
   setRSSSourceActive,
-  storeReadableContent
+  storeReadableContent,
+  markRSSItemCrawlFailure,
+  clearRSSItemCrawlFailure
 } from "./db.mjs";
 import {
   publicMediaUrlFor,
@@ -177,6 +179,7 @@ export async function processMediaMessage(batch, env) {
     const attempt = message.attempts ?? 0;
     const msgStart = Date.now();
     let crawlJobMetadata = null;
+    let metadataFailureReason = null;
 
     // Crawl-wait gate: if a crawl job was pre-submitted by ingest, check its status first
     if (message.body?.crawlJobId) {
@@ -215,6 +218,9 @@ export async function processMediaMessage(batch, env) {
         crawlJobMetadata = crawlCheck.metadata && typeof crawlCheck.metadata === "object"
           ? crawlCheck.metadata
           : null;
+        if (!crawlJobMetadata) {
+          metadataFailureReason = "no_metadata";
+        }
         const numericStoryId = Number(storyId);
         if (Number.isInteger(numericStoryId) && numericStoryId > 0) {
           try {
@@ -231,6 +237,7 @@ export async function processMediaMessage(batch, env) {
           }
         }
       } else if (crawlCheck.status === "failed") {
+        metadataFailureReason = crawlCheck.error ?? "crawl_job_failed";
         log.warn({ event: "crawl_job_failed", storyId, crawlJobId, error: crawlCheck.error ?? "unknown" });
       }
     }
@@ -312,7 +319,7 @@ export async function processMediaMessage(batch, env) {
 
       // If article text came from RSS/cache but metadata was never extracted, crawl for it now
       // Skip if a crawl job was pre-submitted (result already stored or job failed)
-      if (!hasCrawlJob && !crawlMetadata && !resolvedArticle.aiHeadline && body.url) {
+      if (!hasCrawlJob && !crawlMetadata && body.url) {
         log.info({ event: "metadata_crawl_start", storyId, url: body.url });
         const metaCrawl = await crawlUrl(env, body.url, { storyId });
         if (metaCrawl.success && metaCrawl.metadata) {
@@ -320,6 +327,7 @@ export async function processMediaMessage(batch, env) {
           log.info({ event: "metadata_crawl_ok", storyId });
         } else {
           const crawlError = metaCrawl.error ?? "no_metadata";
+          metadataFailureReason = crawlError;
           log.warn({ event: "metadata_crawl_fail", storyId, url: body.url, error: crawlError });
           const isPermanent = /robots\.txt|disallowed|4\d\d/i.test(crawlError);
           if (isPermanent) {
@@ -331,6 +339,37 @@ export async function processMediaMessage(batch, env) {
           }
         }
       }
+
+      if (!crawlMetadata) {
+        const crawlError = metadataFailureReason ?? (body.url ? "no_metadata" : "missing_story_url");
+        log.warn({ event: "metadata_required_missing", storyId, url: body.url ?? null, error: crawlError });
+        try {
+          await markRSSItemCrawlFailure(env, storyId, crawlError);
+        } catch (err) {
+          log.warn({ event: "rss_item_crawl_failure_mark_fail", storyId, error: crawlError, ...log.fmtError(err) });
+        }
+        await upsertMedia(env, {
+          storyId,
+          status: "skipped",
+          falRequestId: null,
+          mediaKey: null,
+          mediaUrl: null,
+          failureReason: `Missing crawl metadata: ${crawlError}`,
+          attempts: attempt + 1,
+          updatedAt: new Date().toISOString(),
+          promptTemplateId: null,
+          imagePrompt: null
+        });
+        message.ack();
+        continue;
+      }
+
+      try {
+        await clearRSSItemCrawlFailure(env, storyId);
+      } catch (err) {
+        log.warn({ event: "rss_item_crawl_failure_clear_fail", storyId, ...log.fmtError(err) });
+      }
+
       const title = crawlMetadata?.title ?? body.title ?? "Story";
       const extractedText = resolvedArticle.text || fallbackText;
       const sourceKind = resolvedArticle.sourceKind ?? (body.url ? "article" : "hn_text");

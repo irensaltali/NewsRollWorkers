@@ -769,6 +769,36 @@ export async function insertRSSItem(env, item) {
   return !error;
 }
 
+export async function markRSSItemCrawlFailure(env, storyId, reason) {
+  if (!hasDB(env)) return false;
+
+  await getDB(env)
+    .from("rss_items")
+    .update({
+      crawl_failed: true,
+      crawl_failure_reason: reason ?? "unknown",
+      crawl_failed_at: new Date().toISOString()
+    })
+    .eq("story_id", storyId);
+
+  return true;
+}
+
+export async function clearRSSItemCrawlFailure(env, storyId) {
+  if (!hasDB(env)) return false;
+
+  await getDB(env)
+    .from("rss_items")
+    .update({
+      crawl_failed: false,
+      crawl_failure_reason: null,
+      crawl_failed_at: null
+    })
+    .eq("story_id", storyId);
+
+  return true;
+}
+
 export async function getRSSSourceIdByStoryId(env, storyId) {
   if (!hasDB(env)) return null;
   const { data } = await getDB(env)

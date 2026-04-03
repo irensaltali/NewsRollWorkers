@@ -2,6 +2,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import {
+  clearRSSItemCrawlFailure,
+  markRSSItemCrawlFailure,
   storeReadableContent,
   storeStoryExplanation,
   storeStorySummary
@@ -143,6 +145,72 @@ test("storeStoryExplanation persists a formatted explanation snapshot", async ()
       feed_url: "https://example.com/explain-feed.xml",
       explanation: "Overview\n\nWhat happened:\nDetailed explanation body.",
       updated_at: "2026-04-02T12:10:00Z"
+    });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("markRSSItemCrawlFailure persists failure details on rss_items", async () => {
+  const env = {
+    SUPABASE_URL: "https://example.supabase.co",
+    SUPABASE_SECRET_KEY: "service-role-test"
+  };
+
+  let rssItemsBody = null;
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (input, init) => {
+    const url = typeof input === "string" ? input : input.url;
+    if (url.includes("/rest/v1/rss_items")) {
+      rssItemsBody = JSON.parse(init.body);
+      return new Response(JSON.stringify([rssItemsBody]), {
+        status: 200,
+        headers: { "content-type": "application/json" }
+      });
+    }
+
+    throw new Error(`Unexpected fetch: ${url}`);
+  };
+
+  try {
+    await markRSSItemCrawlFailure(env, 321, "no_metadata");
+
+    assert.equal(rssItemsBody.crawl_failed, true);
+    assert.equal(rssItemsBody.crawl_failure_reason, "no_metadata");
+    assert.match(rssItemsBody.crawl_failed_at, /^\d{4}-\d{2}-\d{2}T/);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("clearRSSItemCrawlFailure resets failure details on rss_items", async () => {
+  const env = {
+    SUPABASE_URL: "https://example.supabase.co",
+    SUPABASE_SECRET_KEY: "service-role-test"
+  };
+
+  let rssItemsBody = null;
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (input, init) => {
+    const url = typeof input === "string" ? input : input.url;
+    if (url.includes("/rest/v1/rss_items")) {
+      rssItemsBody = JSON.parse(init.body);
+      return new Response(JSON.stringify([rssItemsBody]), {
+        status: 200,
+        headers: { "content-type": "application/json" }
+      });
+    }
+
+    throw new Error(`Unexpected fetch: ${url}`);
+  };
+
+  try {
+    await clearRSSItemCrawlFailure(env, 321);
+
+    assert.deepEqual(rssItemsBody, {
+      crawl_failed: false,
+      crawl_failure_reason: null,
+      crawl_failed_at: null
     });
   } finally {
     globalThis.fetch = originalFetch;
