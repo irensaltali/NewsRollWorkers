@@ -61,6 +61,24 @@ test("upsertItem sends item rows to the Shaped insert endpoint", async () => {
   });
 });
 
+test("upsertItem flattens crawled topic arrays into the Shaped category field", async () => {
+  const env = {
+    SHAPED_API_KEY: "test-key"
+  };
+
+  await withMockedFetch(async (_input, init) => {
+    assert.equal(JSON.parse(init.body).data[0].category, "ai, startups, funding");
+    return new Response("", { status: 200 });
+  }, async () => {
+    const result = await upsertItem(env, {
+      storyId: 456,
+      category: ["ai", "startups", "funding"],
+      sourceEndpoint: "business"
+    });
+    assert.deepEqual(result, { ok: true });
+  });
+});
+
 test("trackEvents sends interaction rows to the Shaped insert endpoint", async () => {
   const env = {
     SHAPED_API_KEY: "test-key",

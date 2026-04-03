@@ -159,6 +159,14 @@ function maxQueueRetries(env) {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : MEDIA_MAX_QUEUE_RETRIES;
 }
 
+export function shapedCategoryFromTopics(topics, fallbackCategory = null) {
+  if (Array.isArray(topics) && topics.some((topic) => typeof topic === "string" && topic.trim())) {
+    return topics;
+  }
+
+  return fallbackCategory;
+}
+
 export async function processMediaMessage(batch, env) {
   const maxRetries = maxQueueRetries(env);
 
@@ -168,6 +176,7 @@ export async function processMediaMessage(batch, env) {
     const storyId = message.body?.storyId;
     const attempt = message.attempts ?? 0;
     const msgStart = Date.now();
+    let crawlJobMetadata = null;
 
     // Crawl-wait gate: if a crawl job was pre-submitted by ingest, check its status first
     if (message.body?.crawlJobId) {
@@ -203,6 +212,9 @@ export async function processMediaMessage(batch, env) {
       }
 
       if (crawlCheck.status === "completed" && crawlCheck.markdown) {
+        crawlJobMetadata = crawlCheck.metadata && typeof crawlCheck.metadata === "object"
+          ? crawlCheck.metadata
+          : null;
         const numericStoryId = Number(storyId);
         if (Number.isInteger(numericStoryId) && numericStoryId > 0) {
           try {
@@ -292,9 +304,11 @@ export async function processMediaMessage(batch, env) {
         }
       }
 
-      let crawlMetadata = resolvedArticle.metadata && typeof resolvedArticle.metadata === "object"
-        ? resolvedArticle.metadata
-        : null;
+      let crawlMetadata =
+        (resolvedArticle.metadata && typeof resolvedArticle.metadata === "object"
+          ? resolvedArticle.metadata
+          : null)
+        ?? crawlJobMetadata;
 
       // If article text came from RSS/cache but metadata was never extracted, crawl for it now
       // Skip if a crawl job was pre-submitted (result already stored or job failed)
@@ -338,7 +352,7 @@ export async function processMediaMessage(batch, env) {
 
       if (headline || summary || topics) {
         try {
-          await storeHeadline(env, body.storyId, headline, null);
+          await storeHeadline(env, body.storyId, headline);
           if (summary) {
             await storeStorySummary(env, {
               storyId: body.storyId,
@@ -495,7 +509,7 @@ export async function processMediaMessage(batch, env) {
           await shaped.upsertItem(env, {
             storyId: body.storyId,
             headline,
-            category: body.endpoint,
+            category: shapedCategoryFromTopics(topics, body.endpoint),
             sourceEndpoint: body.endpoint,
             publishedAt: now,
             mediaUrl,

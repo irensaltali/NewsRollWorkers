@@ -218,7 +218,6 @@ async function upsertStoryContent(env, payload) {
   assignDefined(row, "summary", payload.summary);
   assignDefined(row, "explanation", payload.explanation);
   assignDefined(row, "ai_headline", payload.aiHeadline);
-  assignDefined(row, "headline_prompt", payload.headlinePrompt);
   assignDefined(row, "topics", payload.topics);
 
   await getDB(env)
@@ -242,11 +241,10 @@ export async function getReadableContent(env, storyId) {
   return data ? { extractedText: data.extracted_text, aiHeadline: data.ai_headline ?? null } : null;
 }
 
-export async function storeHeadline(env, storyId, headline, headlinePrompt) {
+export async function storeHeadline(env, storyId, headline) {
   await upsertStoryContent(env, {
     storyId,
     aiHeadline: headline,
-    headlinePrompt: headlinePrompt ?? null,
     updatedAt: new Date().toISOString()
   });
 }

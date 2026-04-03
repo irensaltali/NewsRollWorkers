@@ -22,6 +22,21 @@ function interactionsTable(env) {
   return env?.SHAPED_INTERACTIONS_TABLE ?? DEFAULT_INTERACTIONS_TABLE;
 }
 
+function normalizeCategory(category) {
+  if (Array.isArray(category)) {
+    const topics = category
+      .filter((value) => typeof value === "string" && value.trim())
+      .map((value) => value.trim());
+    return topics.length > 0 ? topics.join(", ") : null;
+  }
+
+  if (typeof category === "string") {
+    const trimmed = category.trim();
+    return trimmed || null;
+  }
+
+  return null;
+}
 
 function buildInsertPayload(rows) {
   return JSON.stringify({ data: rows });
@@ -42,7 +57,7 @@ export async function upsertItem(env, item) {
       created_at: item.publishedAt ?? new Date().toISOString(),
       updated_at: new Date().toISOString(),
       headline: item.headline ?? null,
-      category: item.category ?? item.sourceEndpoint ?? null,
+      category: normalizeCategory(item.category) ?? item.sourceEndpoint ?? null,
       source_endpoint: item.sourceEndpoint ?? null,
       media_url: item.mediaUrl ?? null,
       media_type: item.mediaType ?? null,
@@ -129,4 +144,3 @@ export async function trackEvents(env, userId, events) {
     return { ok: false, reason: err.message };
   }
 }
-

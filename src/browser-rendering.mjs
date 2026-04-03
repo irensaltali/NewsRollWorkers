@@ -19,7 +19,7 @@ const ARTICLE_METADATA_PROMPT = [
   "Extract structured article data from the crawled page.",
   "Return:",
   "1. The article title.",
-  "2. A concise headline summary in at most 3 sentences.",
+  "2. A concise headline summary in at most 2 sentences.",
   "3. The detected article language as a short ISO-639-1 code when possible.",
   "4. A clear AI-generated summary in the same language as the article.",
   "5. A list of relevant topics as lowercase keywords (e.g., ai, privacy, security, data_retention)."

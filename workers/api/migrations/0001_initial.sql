@@ -27,7 +27,6 @@ CREATE TABLE story_content (
   story_id INTEGER PRIMARY KEY,
   source_kind TEXT NOT NULL,
   extracted_text TEXT,
-  headline_prompt TEXT,
   ai_headline TEXT,
   updated_at TEXT NOT NULL
 );
