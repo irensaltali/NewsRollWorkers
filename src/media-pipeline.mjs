@@ -541,6 +541,7 @@ export async function processMediaMessage(batch, env, ctx = null) {
             storyId: body.storyId,
             headline,
             title,
+            summary,
             category: body.endpoint,
             topics: topics ?? null,
             publishedAt: now,

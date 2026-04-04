@@ -6,6 +6,7 @@ import {
   createPromptRunEvent,
   hasAIRequestReceipt,
   listPublishedVisualFeed,
+  getPublishedFeedEntriesByStoryIds,
   storeStoryExplanation,
   storeStoryExplanationData,
   getStoryExplanationData,
@@ -41,6 +42,7 @@ import { listAIFeatures } from "./ai-feature-config.mjs";
 import { getSubscriberInfo, getCreditBalance } from "./revenuecat.mjs";
 import { resolveArticleContent, resolveArticleUrl } from "./article-content.mjs";
 import { promptConfigWithFallback } from "./prompt-config.mjs";
+import { queryPersonalizedFeed } from "./shaped.mjs";
 
 function now() {
   return new Date().toISOString();
@@ -486,27 +488,44 @@ async function handleConfig(_request, env) {
 
 async function handleVisualFeed(request, env) {
   const url = new URL(request.url);
-  const cursorValue = url.searchParams.get("cursor");
-  const cursor = parseVisualFeedCursor(cursorValue);
+  const cursorRaw = url.searchParams.get("cursor");
   const limit = parseVisualFeedLimit(env, url.searchParams.get("limit"));
   const user = await userContext(request, env);
 
+  // Personalized path for authenticated users via Shaped
+  if (user?.userId) {
+    const offset = cursorRaw ? Math.max(0, Number.parseInt(cursorRaw, 10) || 0) : 0;
+    const recommendations = await queryPersonalizedFeed(env, user.userId, { count: offset + limit + 1 });
+
+    if (recommendations.length > 0) {
+      const page = recommendations.slice(offset, offset + limit);
+      const hasMore = recommendations.length > offset + limit;
+      const enriched = await getPublishedFeedEntriesByStoryIds(env, page.map((r) => r.id));
+      return json(
+        {
+          cursor: cursorRaw ?? null,
+          nextCursor: hasMore ? String(offset + limit) : null,
+          items: enriched.map((row) => toVisualFeedItem(env, row))
+        },
+        { headers: { "cache-control": "private, max-age=30" } }
+      );
+    }
+  }
+
+  // Global fallback: anonymous users or Shaped cold start
+  const cursor = parseVisualFeedCursor(cursorRaw);
   if (cursor == null) {
     const snapshot = await readVisualFeedSnapshot(env);
     if (snapshot?.length) {
       return json(buildVisualFeedResponse(env, snapshot, cursor, limit), {
-        headers: {
-          "cache-control": "public, max-age=15, stale-while-revalidate=60"
-        }
+        headers: { "cache-control": "public, max-age=15, stale-while-revalidate=60" }
       });
     }
   }
 
   const items = await listPublishedVisualFeed(env, { cursor, limit });
   return json(buildVisualFeedResponse(env, items, cursor, limit), {
-    headers: {
-      "cache-control": "public, max-age=15, stale-while-revalidate=60"
-    }
+    headers: { "cache-control": "public, max-age=15, stale-while-revalidate=60" }
   });
 }
 

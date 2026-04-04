@@ -32,6 +32,7 @@ test("upsertItem sends item rows to the Shaped insert endpoint", async () => {
           updated_at: "2025-01-01T00:00:00.000Z",
           headline: null,
           title: null,
+          summary: null,
           category: null,
           topics: null,
           media_url: null,
@@ -69,12 +70,14 @@ test("upsertItem flattens crawled topic arrays into the Shaped category field", 
     const item = JSON.parse(init.body).data[0];
     assert.deepEqual(item.topics, ["ai", "startups", "funding"]);
     assert.equal(item.category, "business");
+    assert.equal(item.summary, "Funding round analysis");
     return new Response("", { status: 200 });
   }, async () => {
     const result = await upsertItem(env, {
       storyId: 456,
       topics: ["ai", "startups", "funding"],
-      category: "business"
+      category: "business",
+      summary: "Funding round analysis"
     });
     assert.deepEqual(result, { ok: true });
   });
@@ -98,7 +101,7 @@ test("trackEvents sends interaction rows to the Shaped insert endpoint", async (
           user_id: "user-1",
           item_id: "123",
           created_at: "2025-01-01T00:00:00.000Z",
-          event_type: "view",
+          event_type: "impression",
           label: null,
           session_id: null,
           surface: "unknown",
@@ -121,7 +124,7 @@ test("trackEvents sends interaction rows to the Shaped insert endpoint", async (
       return "2025-01-01T00:00:00.000Z";
     };
     try {
-      const result = await trackEvents(env, "user-1", [{ storyId: 123, eventType: "view" }]);
+      const result = await trackEvents(env, "user-1", [{ storyId: 123, eventType: "impression" }]);
       assert.deepEqual(result, { ok: true });
     } finally {
       crypto.randomUUID = originalRandomUUID;

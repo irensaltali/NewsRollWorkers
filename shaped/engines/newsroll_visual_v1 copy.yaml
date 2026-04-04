@@ -27,8 +27,6 @@ data:
           type: Text
         - name: title
           type: Text
-        - name: summary
-          type: Text
         - name: category
           type: TextCategory
         - name: topics
@@ -40,7 +38,6 @@ index:
     item_fields:
       - headline
       - title
-      - summary
       - category
       - topics
   embeddings:
@@ -52,7 +49,6 @@ index:
         item_fields:
           - headline
           - title
-          - summary
           - category
           - topics
 deployment:

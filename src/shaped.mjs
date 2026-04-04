@@ -1,6 +1,7 @@
 import * as log from "./log.mjs";
 
 const SHAPED_BASE_URL = "https://api.shaped.ai";
+const DEFAULT_ENGINE_NAME = "newsroll_visual_v1";
 const DEFAULT_ITEMS_TABLE = "newsroll_items";
 const DEFAULT_INTERACTIONS_TABLE = "newsroll_interactions";
 
@@ -12,6 +13,10 @@ function shapedHeaders(env) {
   return {
     "x-api-key": env.SHAPED_API_KEY
   };
+}
+
+function engineName(env) {
+  return env?.SHAPED_ENGINE_NAME ?? DEFAULT_ENGINE_NAME;
 }
 
 function itemsTable(env) {
@@ -26,6 +31,10 @@ function normalizeTopics(value) {
   if (!Array.isArray(value)) return null;
   const topics = value.filter((v) => typeof v === "string" && v.trim()).map((v) => v.trim());
   return topics.length > 0 ? topics : null;
+}
+
+function normalizeString(value) {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
 }
 
 function buildInsertPayload(rows) {
@@ -49,7 +58,8 @@ export async function upsertItem(env, item) {
       // headline: AI-extracted; title: RSS original — Shaped uses COALESCE(headline, title) for embeddings
       headline: item.headline ?? item.title ?? null,
       title: item.title ?? null,
-      category: typeof item.category === "string" && item.category.trim() ? item.category.trim() : null,
+      summary: normalizeString(item.summary),
+      category: normalizeString(item.category),
       topics: normalizeTopics(item.topics),
       media_url: item.mediaUrl ?? null,
       media_type: item.mediaType ?? null,
@@ -79,6 +89,47 @@ export async function upsertItem(env, item) {
   } catch (err) {
     log.warn({ event: "shaped_upsert_error", storyId: item.storyId, ...log.fmtError(err) });
     return { ok: false, reason: err.message };
+  }
+}
+
+/**
+ * Query Shaped for personalized feed recommendations for a user.
+ * Returns [{id: string, score: number}] in ranked order (best first).
+ * Never throws to caller — returns [] on any failure.
+ */
+export async function queryPersonalizedFeed(env, userId, { count = 20 } = {}) {
+  if (!isEnabled(env)) {
+    log.warn({ event: "shaped_disabled", reason: "missing_api_key" });
+    return [];
+  }
+  if (!userId) return [];
+  try {
+    const url = `${SHAPED_BASE_URL}/v2/engines/${engineName(env)}/queries/personalized_trending_feed`;
+    const resp = await fetch(url, {
+      method: "POST",
+      headers: {
+        ...shapedHeaders(env),
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        parameters: {
+          user_id: userId,
+          count
+        }
+      })
+    });
+
+    if (!resp.ok) {
+      const detail = await resp.text().catch(() => "");
+      log.warn({ event: "shaped_query_fail", userId, httpStatus: resp.status, detail: detail.slice(0, 200) });
+      return [];
+    }
+
+    const data = await resp.json();
+    return (data.results ?? []).map((r) => ({ id: String(r.id), score: r.score ?? 0 }));
+  } catch (err) {
+    log.warn({ event: "shaped_query_error", userId, ...log.fmtError(err) });
+    return [];
   }
 }
 

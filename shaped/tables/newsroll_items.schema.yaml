@@ -8,8 +8,9 @@ column_schema:
   updated_at: DateTime
   headline: String
   title: String
+  summary: String
   category: String
-  topics: List[String]
+  topics: Array(String)
   media_url: String
   media_type: String
   media_provider: String

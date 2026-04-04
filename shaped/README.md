@@ -21,9 +21,9 @@ NewsRoll is a fast-moving content feed with:
 For that shape of product, the best Shaped usage is:
 
 - stream interactions in real time
-- upsert item metadata whenever stories publish or velocity changes
-- start with a simple engine that works even before model training
-- add collaborative filtering once interaction volume is meaningful
+- upsert item metadata whenever stories publish or metadata changes
+- start with a content-plus-trending engine that works before model training
+- add collaborative retrieval once interaction volume is meaningful
 
 Shaped's v2 engines can rank items from just an interaction table. That means you can get popularity/trending behavior immediately, then improve personalization with trained models as data accumulates.
 
@@ -90,8 +90,11 @@ Keep one row per story/item. Recommended required fields:
 - `created_at`
 - `updated_at`
 - `headline`
+- `title`
+- `summary`
 - `category`
-- `source_endpoint`
+- `topics`
+- `media_type`
 
 ### Interactions table
 
@@ -111,7 +114,6 @@ Additional ranking context:
 - `surface`
 - `feed_mode`
 - `media_type`
-- `source_endpoint`
 - `ai_action`
 
 ## Recommended event labels
@@ -140,6 +142,14 @@ Adjust these after observing feed behavior. For news, over-weighting impressions
 
 Shaped works best when the item table already contains the ranking/search fields you care about. Do not depend on runtime joins if you can avoid it.
 
+For NewsRoll, that means the item row should already include the content features you want to embed and filter on:
+
+- `headline`
+- `title`
+- `summary`
+- `topics`
+- `category`
+
 ### 2. Use real-time events, not batch-only interactions
 
 For a news app, interaction freshness matters. Push events continuously.
@@ -156,6 +166,20 @@ Do not make Shaped your only ranking path until:
 
 Tables should remain stable. Most ranking experimentation should happen in versioned engine YAML files.
 
+## Current engine shape
+
+`newsroll_visual_v1` is intentionally a launch-safe engine:
+
+- lexical + dense item indexing over `headline`, `title`, `summary`, `category`, and `topics`
+- an `exclude_seen` personal filter backed by the interaction table
+- a `trending_feed` query for anonymous/new-user fallback
+- a `personalized_trending_feed` query that blends recency with content similarity to recent interactions
+- a `rerank_candidates` query for candidate-ID reranking from the existing backend feed pipeline
+
+The saved queries are written in ShapedQL directly rather than the structured query object format. This is intentional: the live Shaped v2 validator currently accepts the SQL-form saved queries more reliably than the object form shown in some docs examples.
+
+This is the right starting point for NewsRoll because news relevance is dominated by freshness plus topical fit. Collaborative retrieval should come in `newsroll_visual_v2` after interaction volume is high enough to support it.
+
 ## Suggested next code changes
 
 The current worker integration is expected to use:
@@ -164,6 +188,9 @@ The current worker integration is expected to use:
 2. `SHAPED_ITEMS_TABLE=newsroll_items`
 3. `SHAPED_INTERACTIONS_TABLE=newsroll_interactions`
 4. `POST /v2/tables/{table}/insert` with JSON `{"data":[...]}` for streaming items and interactions
-5. `POST /v2/engines/{engine}/query` with a ShapedQL candidate-ID reranking query
+5. `POST /v2/engines/{engine}/queries/{query_name}` using one of these saved queries:
+   - `trending_feed` for anonymous/new-user fallback
+   - `personalized_trending_feed` for in-session personalized feed ranking
+   - `rerank_candidates` for backend candidate-ID reranking
 
 Treat this folder as the source of truth for Shaped provisioning and engine evolution.

@@ -144,6 +144,38 @@ export async function listPublishedVisualFeed(env, { cursor = null, limit = 20 }
   }));
 }
 
+export async function getPublishedFeedEntriesByStoryIds(env, storyIds) {
+  if (!hasDB(env) || !Array.isArray(storyIds) || storyIds.length === 0) {
+    return [];
+  }
+
+  const uniqueIds = [...new Set(storyIds.map(Number).filter(Number.isFinite))];
+  if (uniqueIds.length === 0) return [];
+
+  const { data } = await getDB(env)
+    .from("published_feed_entries")
+    .select("story_id, publish_sequence, source_endpoint, published_at, media_url, media_status, headline")
+    .in("story_id", uniqueIds);
+
+  const sourceUrlsByStoryId = await listStorySourceUrls(env, uniqueIds);
+
+  const rowsByStoryId = new Map(
+    (data ?? []).map((r) => [Number(r.story_id), {
+      storyId: Number(r.story_id),
+      publishSequence: r.publish_sequence,
+      sourceEndpoint: r.source_endpoint,
+      publishedAt: r.published_at,
+      mediaUrl: r.media_url,
+      sourceUrl: sourceUrlsByStoryId.get(Number(r.story_id)) ?? null,
+      mediaStatus: r.media_status,
+      headline: r.headline
+    }])
+  );
+
+  // Preserve the original storyIds order (Shaped ranking order)
+  return storyIds.map((id) => rowsByStoryId.get(Number(id))).filter(Boolean);
+}
+
 export async function getLatestPublishedVisualFeedSnapshot(env, limit = 100) {
   return listPublishedVisualFeed(env, { limit });
 }
