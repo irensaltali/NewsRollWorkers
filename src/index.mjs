@@ -1,4 +1,4 @@
-import { buildAppConfig } from "./config.mjs";
+import { buildAppConfig, publicMediaUrlFor } from "./config.mjs";
 import {
   getReadableContent,
   getAIPromptConfig,
@@ -13,7 +13,8 @@ import {
   getStorySummaryAndContent,
   storeStorySummary,
   storeAIRequestReceipt,
-  storeCachedAIResult
+  storeCachedAIResult,
+  getPromptTemplateById
 } from "./db.mjs";
 import { error, json, readJson, bearerToken } from "./http.mjs";
 import * as log from "./log.mjs";
@@ -41,7 +42,9 @@ import { AI_ACTIONS } from "./ai-actions.mjs";
 import { listAIFeatures } from "./ai-feature-config.mjs";
 import { getSubscriberInfo, getCreditBalance } from "./revenuecat.mjs";
 import { resolveArticleContent, resolveArticleUrl } from "./article-content.mjs";
-import { promptConfigWithFallback } from "./prompt-config.mjs";
+import { promptConfigWithFallback, mediaTemplateWithFallback, buildPromptInput, clipPromptText } from "./prompt-config.mjs";
+import { generateImageWithProvider } from "./media-generation.mjs";
+import { crawlUrl } from "./browser-rendering.mjs";
 import { queryPersonalizedFeed } from "./shaped.mjs";
 
 function now() {
@@ -915,6 +918,182 @@ async function handleGetCredits(request, env) {
   });
 }
 
+// ── Admin helpers ─────────────────────────────────────────────────────────────
+
+function requireAdminKey(request, env) {
+  const secret = env.ADMIN_API_KEY;
+  if (!secret) return error("Admin endpoint not configured", 503);
+  const token = bearerToken(request);
+  if (!token || token !== secret) return error("Unauthorized", 401);
+  return null;
+}
+
+async function handleAdminTestPrompt(request, env) {
+  const authErr = requireAdminKey(request, env);
+  if (authErr) return authErr;
+
+  const body = await readJson(request);
+  if (!body) return error("Invalid JSON body", 400);
+
+  const start = Date.now();
+
+  // ── Resolve content ──────────────────────────────────────────────────────
+  let title = "";
+  let articleText = "";
+  let sourceKind = "provided";
+  let crawlMetadata = null;
+
+  if (body.storyId) {
+    const resolved = await resolveArticleContent(env, body.storyId, {
+      title: body.title ?? "",
+      url: body.url ?? null
+    }, { allowCrawl: false });
+    title = resolved.title || body.title || "";
+    articleText = resolved.text || "";
+    sourceKind = resolved.sourceKind ?? "cache";
+    crawlMetadata = resolved.metadata ?? null;
+    if (!articleText && body.url) {
+      const withCrawl = await resolveArticleContent(env, body.storyId, {
+        title: body.title ?? "",
+        url: body.url
+      });
+      title = withCrawl.title || title;
+      articleText = withCrawl.text || "";
+      sourceKind = withCrawl.sourceKind ?? sourceKind;
+      crawlMetadata = withCrawl.metadata ?? crawlMetadata;
+    }
+  } else if (body.url) {
+    const crawlResult = await crawlUrl(env, body.url);
+    if (crawlResult.success && crawlResult.markdown) {
+      articleText = crawlResult.markdown;
+      sourceKind = "crawl";
+      crawlMetadata = crawlResult.metadata ?? null;
+      title = crawlMetadata?.title || body.title || "";
+    } else {
+      return error("Crawl failed", 422, { crawlError: crawlResult.error ?? "unknown" });
+    }
+  } else {
+    title = body.title || "";
+    articleText = body.text || "";
+    sourceKind = "provided";
+  }
+
+  if (!title && !articleText) {
+    return error("No content to generate from. Provide storyId, url, or title/text.", 400);
+  }
+
+  // ── Resolve template ────────────────────────────────────────────────────
+  let template;
+  if (body.templateText) {
+    template = {
+      id: null,
+      name: "adhoc",
+      templateText: body.templateText,
+      provider: body.provider ?? "fal",
+      model: body.model ?? null,
+      settings: body.settings ?? {},
+      modality: "image"
+    };
+  } else if (body.templateId) {
+    const dbTemplate = await getPromptTemplateById(env, body.templateId);
+    if (!dbTemplate) return error("Template not found", 404);
+    template = dbTemplate;
+    if (body.provider) template.provider = body.provider;
+    if (body.model) template.model = body.model;
+    if (body.settings) template.settings = { ...template.settings, ...body.settings };
+  } else {
+    template = mediaTemplateWithFallback(null, "image");
+    if (body.provider) template.provider = body.provider;
+    if (body.model) template.model = body.model;
+    if (body.settings) template.settings = { ...template.settings, ...body.settings };
+  }
+
+  template = mediaTemplateWithFallback(template, "image");
+
+  // ── Build prompt ────────────────────────────────────────────────────────
+  const resolvedPrompt = buildPromptInput(template.templateText, {
+    title,
+    sourceText: clipPromptText(articleText, 1200)
+  });
+
+  // ── Generate image ──────────────────────────────────────────────────────
+  const genStart = Date.now();
+  const result = await generateImageWithProvider(env, {
+    provider: template.provider,
+    model: template.model,
+    settings: template.settings,
+    prompt: resolvedPrompt,
+    storyId: body.storyId ?? null,
+    allowPlaceholder: false
+  });
+  const latencyMs = Date.now() - genStart;
+
+  // ── Optional R2 upload ──────────────────────────────────────────────────
+  let r2Url = null;
+  if (body.uploadToR2 && result.status === "ready" && result.url && env.MEDIA_BUCKET?.put) {
+    const imageResponse = await fetch(result.url);
+    if (imageResponse.ok) {
+      const key = `test-prompts/${Date.now()}.webp`;
+      await env.MEDIA_BUCKET.put(key, imageResponse.body, {
+        httpMetadata: { contentType: imageResponse.headers.get("content-type") ?? "image/webp" }
+      });
+      r2Url = publicMediaUrlFor(env, key);
+    }
+  }
+
+  // ── Optional prompt run event ───────────────────────────────────────────
+  let promptRunEventId = null;
+  if (body.logPromptRun !== false) {
+    try {
+      const eventResult = await createPromptRunEvent(env, {
+        source: "admin_test_prompt",
+        promptKind: "media",
+        promptKey: template.name ?? "adhoc",
+        promptTemplateId: template.id ?? null,
+        provider: result.provider ?? template.provider ?? "fal",
+        model: result.model ?? template.model ?? null,
+        modality: "image",
+        status: result.status === "ready" ? "ready" : "failed",
+        latencyMs,
+        requestExcerpt: resolvedPrompt.slice(0, 500),
+        responseExcerpt: result.url ?? null,
+        artifactUrl: result.url ?? null,
+        errorText: result.errorText ?? null,
+        storyId: body.storyId ?? null
+      });
+      promptRunEventId = eventResult?.id ?? null;
+    } catch (err) {
+      log.warn({ event: "test_prompt_log_fail", ...log.fmtError(err) });
+    }
+  }
+
+  return json({
+    status: result.status,
+    imageUrl: result.url ?? null,
+    r2Url,
+    provider: result.provider ?? template.provider,
+    model: result.model ?? template.model,
+    resolvedPrompt,
+    templateUsed: {
+      id: template.id,
+      name: template.name,
+      templateText: template.templateText
+    },
+    settings: template.settings,
+    resolvedContent: {
+      title,
+      textLength: articleText.length,
+      sourceKind,
+      metadata: crawlMetadata
+    },
+    latencyMs,
+    totalMs: Date.now() - start,
+    error: result.errorText ?? null,
+    promptRunEventId,
+    billableUnits: result.billableUnits ?? null
+  });
+}
+
 const ROUTES = [
   { method: "GET",   path: "/health",               name: "health",           handler: (r, e) => json({ ok: true, service: e.APP_NAME ?? "NewsRoll Backend", environment: e.ENVIRONMENT ?? "unknown" }) },
   { method: "GET",   path: "/v1/config",             name: "config",           handler: handleConfig },
@@ -924,6 +1103,7 @@ const ROUTES = [
   { method: "POST",  path: "/v1/ai/translate",         name: "ai_translate",    handler: handleAITranslate },
   { method: "POST",  path: "/v1/ai/explain",           name: "ai_explain",      handler: handleAIExplain },
   { method: "GET",   path: "/v1/credits",              name: "credits",         handler: handleGetCredits },
+  { method: "POST",  path: "/admin/test-prompt",       name: "admin_test_prompt", handler: handleAdminTestPrompt },
 ];
 
 async function routeRequest(request, env, ctx) {

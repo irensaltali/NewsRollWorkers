@@ -674,6 +674,16 @@ function normalizePromptTemplateRow(r) {
   };
 }
 
+export async function getPromptTemplateById(env, templateId) {
+  if (!hasDB(env) || !templateId) return null;
+  const { data } = await getDB(env)
+    .from("prompt_templates")
+    .select("*")
+    .eq("id", templateId)
+    .maybeSingle();
+  return normalizePromptTemplateRow(data);
+}
+
 export async function getRandomActivePromptTemplate(env, { modality = "image", provider = null } = {}) {
   if (!hasDB(env)) return null;
 
