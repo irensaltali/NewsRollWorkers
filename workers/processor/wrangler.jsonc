@@ -46,7 +46,7 @@
 	"r2_buckets": [
 		{
 			"binding": "MEDIA_BUCKET",
-			"bucket_name": "newsroll-media-staging"
+			"bucket_name": "newsroll-media"
 		}
 	],
 	"queues": {

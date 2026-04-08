@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import { buildArticleMetadataJsonOptions, buildCrawlRequest, crawlUrl, normalizeArticleMetadata, readCrawlMarkdown } from "../src/browser-rendering.mjs";
-import mediaWorker from "../workers/media/index.mjs";
+import mediaWorker from "../workers/processor/index.mjs";
 import { buildHeadlineRequest } from "../src/summary.mjs";
 
 test("media worker responds to root fetch requests", async () => {
@@ -13,7 +13,7 @@ test("media worker responds to root fetch requests", async () => {
   assert.equal(response.status, 200);
   assert.deepEqual(await response.json(), {
     ok: true,
-    service: "newsroll-media",
+    service: "newsroll-processor",
     environment: "staging"
   });
 });
@@ -66,7 +66,7 @@ test("article metadata json options use the expected schema contract", () => {
   assert.equal(jsonOptions.response_format.json_schema.schema.additionalProperties, false);
   assert.deepEqual(
     jsonOptions.response_format.json_schema.schema.required,
-    ["title", "headline", "language", "summary"]
+    ["title", "headline", "language", "summary", "topics"]
   );
 });
 
@@ -80,7 +80,8 @@ test("normalizeArticleMetadata trims and normalizes crawl metadata", () => {
     title: "Example Title",
     headline: "Three sentence summary.",
     language: "en",
-    summary: "Summary body."
+    summary: "Summary body.",
+    topics: null
   });
 });
 
@@ -200,7 +201,8 @@ test("crawlUrl submits and polls the Cloudflare crawl API", async (t) => {
     title: "Crawled title",
     headline: "Crawled hook.",
     language: "en",
-    summary: "Crawled summary."
+    summary: "Crawled summary.",
+    topics: null
   });
   assert.equal(calls.length, 2);
   assert.equal(calls[0].init.method, "POST");

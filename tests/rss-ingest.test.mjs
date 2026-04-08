@@ -5,7 +5,7 @@ import { computeRSSQualityScore, ingestSource } from "../src/rss-ingest.mjs";
 
 test("computeRSSQualityScore accepts camelCase Supabase rows", () => {
   const score = computeRSSQualityScore(
-    { publishedAt: "2026-04-02T00:00:00.000Z" },
+    { publishedAt: new Date().toISOString() },
     { tier: 1, reliabilityScore: 0.9 }
   );
 

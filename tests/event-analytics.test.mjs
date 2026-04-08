@@ -2,8 +2,9 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import {
-  querySeenStoryIds,
-  writeEventBatch
+  writeEventBatch,
+  queryEventAnalytics,
+  hasEventAnalyticsQueryConfig
 } from "../src/event-analytics.mjs";
 
 test("writeEventBatch writes event rows to Analytics Engine", async () => {
@@ -50,17 +51,17 @@ test("writeEventBatch writes event rows to Analytics Engine", async () => {
   }]);
 });
 
-test("querySeenStoryIds reads distinct story ids from Analytics Engine SQL API", async () => {
+test("queryEventAnalytics sends SQL query to Analytics Engine API", async () => {
   const env = {
     CLOUDFLARE_ACCOUNT_ID: "acct-1",
     CLOUDFLARE_API_TOKEN: "token-1",
     EVENT_ANALYTICS_DATASET: "newsroll_user_events"
   };
 
-  let query = null;
+  let capturedQuery = null;
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async (_input, init) => {
-    query = init.body;
+    capturedQuery = init.body;
     return new Response(JSON.stringify({
       data: [{ story_id: "123" }, { story_id: "456" }]
     }), {
@@ -70,12 +71,17 @@ test("querySeenStoryIds reads distinct story ids from Analytics Engine SQL API",
   };
 
   try {
-    const storyIds = await querySeenStoryIds(env, "user-1", 7);
-    assert.deepEqual(storyIds, [123, 456]);
-    assert.match(query, /FROM newsroll_user_events/);
-    assert.match(query, /blob1 = 'user-1'/);
-    assert.match(query, /blob3 = 'impression'/);
+    const sql = "SELECT blob2 AS story_id FROM newsroll_user_events WHERE blob1 = 'user-1' AND blob3 = 'impression' LIMIT 100";
+    const rows = await queryEventAnalytics(env, sql);
+    assert.deepEqual(rows, [{ story_id: "123" }, { story_id: "456" }]);
+    assert.equal(capturedQuery, sql);
   } finally {
     globalThis.fetch = originalFetch;
   }
+});
+
+test("hasEventAnalyticsQueryConfig returns false when config is missing", () => {
+  assert.equal(hasEventAnalyticsQueryConfig({}), false);
+  assert.equal(hasEventAnalyticsQueryConfig({ CLOUDFLARE_ACCOUNT_ID: "x" }), false);
+  assert.equal(hasEventAnalyticsQueryConfig({ CLOUDFLARE_ACCOUNT_ID: "x", CLOUDFLARE_API_TOKEN: "y" }), true);
 });

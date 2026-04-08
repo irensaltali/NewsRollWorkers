@@ -110,14 +110,14 @@ function withSpendCounter(mocks, counter) {
   }));
 }
 
-test("explain endpoint routes simple and technical modes with distinct costs", async () => {
+test("explain endpoint always uses technical mode at unified cost", async () => {
   const installId = "explain-mode-user";
   const token = makeToken(installId);
   const modeRequests = [];
 
   async function sendExplain(level) {
     return withMockedFetch([
-      ...customerMocks(installId, { balance: 900, spendBalance: level === "simple" ? 894 : 884 }),
+      ...customerMocks(installId, { balance: 900, spendBalance: 894 }),
       {
         match: "api.openai.com",
         onMatch: ({ init }) => {
@@ -127,12 +127,12 @@ test("explain endpoint routes simple and technical modes with distinct costs", a
           choices: [{
             message: {
               content: JSON.stringify({
-                title: level === "simple" ? "Plain-English summary" : "Technical readout",
+                title: "Technical readout",
                 sections: [
                   { heading: "Overview", body: "Body copy" }
                 ],
                 followUps: ["What changes at scale?"],
-                level
+                level: "technical"
               })
             }
           }]
@@ -159,12 +159,11 @@ test("explain endpoint routes simple and technical modes with distinct costs", a
 
   const simplePayload = await simpleResponse.json();
   const technicalPayload = await technicalResponse.json();
-  assert.equal(simplePayload.level, "simple");
+  // Both modes resolve to technical at cost 6
+  assert.equal(simplePayload.level, "technical");
   assert.equal(simplePayload.creditsUsed, 6);
   assert.equal(technicalPayload.level, "technical");
-  assert.equal(technicalPayload.creditsUsed, 10);
-  assert.equal(modeRequests.some((content) => content.includes('"level":"simple"')), true);
-  assert.equal(modeRequests.some((content) => content.includes('"level":"technical"')), true);
+  assert.equal(technicalPayload.creditsUsed, 6);
 });
 
 test("explain logs empty model content and does not cache or charge", async () => {
