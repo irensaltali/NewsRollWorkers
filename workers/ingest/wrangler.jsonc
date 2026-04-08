@@ -38,39 +38,5 @@
 	"observability": {
 		"enabled": true,
 		"head_sampling_rate": 1
-	},
-	// ── Staging environment ─────────────────────────────────────────────
-	"env": {
-		"staging": {
-			"name": "newsroll-ingest-staging",
-			"vars": {
-				"APP_NAME": "NewsRoll Ingest",
-				"ENVIRONMENT": "staging",
-				"CLOUDFLARE_ACCOUNT_ID": "ccbc9926d08a298aee2a4f0cffcfc4a3",
-				"PUBLIC_API_BASE_URL": "https://api-staging.newsroll.app",
-				"PUBLIC_MEDIA_BASE_URL": "https://media-staging.newsroll.app",
-				"MEDIA_DAILY_LIMIT": "10",
-				"MEDIA_PER_RUN_LIMIT": "1",
-				"MEDIA_MIN_SCORE": "5",
-				"SUPABASE_URL": "https://snazihvdznshybaogwrx.supabase.co"
-			},
-			"queues": {
-				"producers": [
-					{
-						"binding": "MEDIA_QUEUE",
-						"queue": "newsroll-media-staging"
-					}
-				]
-			},
-			"triggers": {
-				"crons": [
-					"*/5 * * * *"
-				]
-			},
-			"observability": {
-				"enabled": true,
-				"head_sampling_rate": 1
-			}
-		}
 	}
 }

@@ -65,7 +65,7 @@
 				"EVENT_ANALYTICS_DATASET": "newsroll_user_events",
 				"PUBLIC_BASE_URL": "https://api-staging.newsroll.app",
 				"PUBLIC_API_BASE_URL": "https://api-staging.newsroll.app",
-					"PUBLIC_MEDIA_BASE_URL": "https://media-staging.newsroll.app",
+					"PUBLIC_MEDIA_BASE_URL": "https://media.newsroll.app",
 				"REVENUECAT_APP_ID": "app8fd0f68a2b",
 				"REVENUECAT_PROJECT_ID": "proj503ccfa0",
 				"SHAPED_ENGINE_NAME": "newsroll_visual_v1",
