@@ -47,17 +47,8 @@ export function buildFalImageRequest(prompt, settings = {}) {
   };
 }
 
-async function requestFalImage(env, { prompt, model, settings, storyId = null, allowPlaceholder = false }) {
+async function requestFalImage(env, { prompt, model, settings, storyId = null }) {
   if (!env.FAL_API_KEY) {
-    if (allowPlaceholder) {
-      return {
-        status: "ready",
-        url: env.MEDIA_PLACEHOLDER_URL ?? null,
-        requestId: "placeholder",
-        provider: "fal",
-        model: normalizeFalModel(model, "fal-ai/flux-2/turbo")
-      };
-    }
     return {
       status: "failed",
       errorText: "Missing FAL_API_KEY",

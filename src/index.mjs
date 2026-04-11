@@ -1023,8 +1023,7 @@ async function handleAdminTestPrompt(request, env) {
     model: template.model,
     settings: template.settings,
     prompt: resolvedPrompt,
-    storyId: body.storyId ?? null,
-    allowPlaceholder: false
+    storyId: body.storyId ?? null
   });
   const latencyMs = Date.now() - genStart;
 

@@ -166,6 +166,32 @@ export async function processMediaMessage(batch, env, ctx = null) {
 
   const MAX_CRAWL_WAITS = 5;
 
+  // ── Daily fal limit gate (checked once per batch, before any work) ──────────
+  const falLimit = falAiDailyLimit(env);
+  let falDailyCount = await getDailyFalCount(env);
+  const falLimitReached = falLimit > 0 && falDailyCount >= falLimit;
+  if (falLimitReached) {
+    log.warn({ event: "fal_daily_limit_reached_batch", dailyCount: falDailyCount, limit: falLimit });
+    for (const message of batch.messages) {
+      const storyId = message.body?.storyId;
+      log.info({ event: "media_msg_skip_fal_limit", storyId, dailyCount: falDailyCount, limit: falLimit });
+      await upsertMedia(env, {
+        storyId,
+        status: "skipped",
+        falRequestId: null,
+        mediaKey: null,
+        mediaUrl: null,
+        failureReason: `Fal daily limit reached (${falDailyCount}/${falLimit})`,
+        attempts: (message.attempts ?? 0) + 1,
+        updatedAt: new Date().toISOString(),
+        promptTemplateId: null,
+        imagePrompt: null
+      });
+      message.ack();
+    }
+    return;
+  }
+
   for (const message of batch.messages) {
     const storyId = message.body?.storyId;
     const attempt = message.attempts ?? 0;
@@ -420,33 +446,35 @@ export async function processMediaMessage(batch, env, ctx = null) {
       const imagePrompt = generatePrompt(template, { title, extractedText });
       const generationStart = Date.now();
 
-      const falLimit = falAiDailyLimit(env);
-      const falDailyCount = await getDailyFalCount(env);
-      const falLimitReached = falLimit > 0 && falDailyCount >= falLimit;
-
-      let result;
-      if (falLimitReached) {
-        const placeholderUrl = env.MEDIA_FALAI_PLACEHOLDER_URL ?? null;
+      // Re-check fal limit per message (count may have incremented within this batch)
+      falDailyCount = await getDailyFalCount(env);
+      if (falLimit > 0 && falDailyCount >= falLimit) {
         log.warn({ event: "fal_daily_limit_reached", storyId, dailyCount: falDailyCount, limit: falLimit });
-        result = {
-          status: "ready",
-          url: placeholderUrl,
-          requestId: "fal_limit_reached",
-          provider: "fal",
-          model: template.model ?? "fal-ai/flux-2/turbo"
-        };
-      } else {
-        result = await generateImageWithProvider(env, {
-          provider: template.provider,
-          model: template.model,
-          settings: template.settings,
-          prompt: imagePrompt,
+        await upsertMedia(env, {
           storyId,
-          allowPlaceholder: true
+          status: "skipped",
+          falRequestId: null,
+          mediaKey: null,
+          mediaUrl: null,
+          failureReason: `Fal daily limit reached (${falDailyCount}/${falLimit})`,
+          attempts: attempt + 1,
+          updatedAt: new Date().toISOString(),
+          promptTemplateId: template?.id ?? null,
+          imagePrompt
         });
-        if (result.provider === "fal" && result.status === "ready") {
-          await incrementDailyFalCount(env);
-        }
+        message.ack();
+        continue;
+      }
+
+      const result = await generateImageWithProvider(env, {
+        provider: template.provider,
+        model: template.model,
+        settings: template.settings,
+        prompt: imagePrompt,
+        storyId
+      });
+      if (result.provider === "fal" && result.status === "ready") {
+        await incrementDailyFalCount(env);
       }
 
       const generationDurationMs = Date.now() - generationStart;
