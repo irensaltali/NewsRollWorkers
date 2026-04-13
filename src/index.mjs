@@ -497,17 +497,16 @@ async function handleVisualFeed(request, env) {
 
   // Personalized path for authenticated users via Shaped
   if (user?.userId) {
-    const offset = cursorRaw ? Math.max(0, Number.parseInt(cursorRaw, 10) || 0) : 0;
-    const recommendations = await queryPersonalizedFeed(env, user.userId, { count: offset + limit + 1 });
+    const paginationKey = cursorRaw || `${user.userId}_${Date.now()}`;
+    const shaped = await queryPersonalizedFeed(env, user.userId, { count: limit, paginationKey });
 
-    if (recommendations.length > 0) {
-      const page = recommendations.slice(offset, offset + limit);
-      const hasMore = recommendations.length > offset + limit;
-      const enriched = await getPublishedFeedEntriesByStoryIds(env, page.map((r) => r.id));
+    if (shaped.results.length > 0) {
+      const enriched = await getPublishedFeedEntriesByStoryIds(env, shaped.results.map((r) => r.id));
+      const nextCursor = shaped.paginationKey && shaped.results.length >= limit ? shaped.paginationKey : null;
       return json(
         {
           cursor: cursorRaw ?? null,
-          nextCursor: hasMore ? String(offset + limit) : null,
+          nextCursor,
           items: enriched.map((row) => toVisualFeedItem(env, row))
         },
         { headers: { "cache-control": "private, max-age=30" } }

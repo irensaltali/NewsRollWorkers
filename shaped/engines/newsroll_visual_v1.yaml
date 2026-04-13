@@ -57,12 +57,17 @@ index:
           - topics
 deployment:
   data_tier: cold_tier
+  pagination:
+    page_expiration_in_seconds: 600
 queries:
   trending_feed:
     query: |
       SELECT *
       FROM retrieve(column_order(columns='_derived_popular_rank ASC', limit=1000))
-      LIMIT 20
+      LIMIT $count
+    parameters:
+      count:
+        default: 20
   personalized_trending_feed:
     query: |
       SELECT score(
@@ -75,10 +80,12 @@ queries:
       FROM retrieve(column_order(columns='_derived_popular_rank ASC', limit=1000))
       WHERE prebuilt('exclude_seen', input_user_id='$user_id')
       ORDER BY r
-      LIMIT 20
+      LIMIT $count
     parameters:
       user_id:
         default: null
+      count:
+        default: 20
   rerank_candidates:
     query: |
       SELECT score(

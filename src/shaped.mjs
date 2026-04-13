@@ -94,42 +94,52 @@ export async function upsertItem(env, item) {
 
 /**
  * Query Shaped for personalized feed recommendations for a user.
- * Returns [{id: string, score: number}] in ranked order (best first).
- * Never throws to caller — returns [] on any failure.
+ * Returns { results: [{id, score}], paginationKey: string|null }.
+ * Uses Shaped's pagination_key mechanism for stateful server-side paging.
+ * Never throws to caller — returns empty results on any failure.
  */
-export async function queryPersonalizedFeed(env, userId, { count = 20 } = {}) {
+export async function queryPersonalizedFeed(env, userId, { count = 20, paginationKey = null } = {}) {
+  const empty = { results: [], paginationKey: null };
   if (!isEnabled(env)) {
     log.warn({ event: "shaped_disabled", reason: "missing_api_key" });
-    return [];
+    return empty;
   }
-  if (!userId) return [];
+  if (!userId) return empty;
   try {
     const url = `${SHAPED_BASE_URL}/v2/engines/${engineName(env)}/queries/personalized_trending_feed`;
+    const body = {
+      parameters: {
+        user_id: userId,
+        count
+      }
+    };
+    if (paginationKey) {
+      body.pagination_key = paginationKey;
+    }
     const resp = await fetch(url, {
       method: "POST",
       headers: {
         ...shapedHeaders(env),
         "Content-Type": "application/json"
       },
-      body: JSON.stringify({
-        parameters: {
-          user_id: userId,
-          count
-        }
-      })
+      body: JSON.stringify(body)
     });
 
     if (!resp.ok) {
       const detail = await resp.text().catch(() => "");
       log.warn({ event: "shaped_query_fail", userId, httpStatus: resp.status, detail: detail.slice(0, 200) });
-      return [];
+      return empty;
     }
 
     const data = await resp.json();
-    return (data.results ?? []).map((r) => ({ id: String(r.id), score: r.score ?? 0 }));
+    const results = (data.results ?? []).map((r) => ({ id: String(r.id), score: r.score ?? 0 }));
+    return {
+      results,
+      paginationKey: data.pagination_key ?? null
+    };
   } catch (err) {
     log.warn({ event: "shaped_query_error", userId, ...log.fmtError(err) });
-    return [];
+    return empty;
   }
 }
 

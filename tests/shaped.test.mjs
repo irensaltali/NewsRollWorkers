@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { upsertItem, trackEvents } from "../src/shaped.mjs";
+import { upsertItem, queryPersonalizedFeed, trackEvents } from "../src/shaped.mjs";
 
 function withMockedFetch(handler, fn) {
   const originalFetch = globalThis.fetch;
@@ -80,6 +80,78 @@ test("upsertItem flattens crawled topic arrays into the Shaped category field", 
       summary: "Funding round analysis"
     });
     assert.deepEqual(result, { ok: true });
+  });
+});
+
+test("queryPersonalizedFeed sends pagination_key and returns results with paginationKey", async () => {
+  const env = {
+    SHAPED_API_KEY: "test-key",
+    SHAPED_ENGINE_NAME: "custom_engine"
+  };
+
+  await withMockedFetch(async (input, init) => {
+    const url = typeof input === "string" ? input : input.url;
+    assert.equal(url, "https://api.shaped.ai/v2/engines/custom_engine/queries/personalized_trending_feed");
+    assert.equal(init.method, "POST");
+    const body = JSON.parse(init.body);
+    assert.equal(body.parameters.user_id, "user-1");
+    assert.equal(body.parameters.count, 10);
+    assert.equal(body.pagination_key, "user-1_1700000000000");
+    return new Response(JSON.stringify({
+      results: [
+        { id: "42", score: 0.95 },
+        { id: "7", score: 0.80 }
+      ],
+      pagination_key: "user-1_1700000000000"
+    }), { status: 200 });
+  }, async () => {
+    const result = await queryPersonalizedFeed(env, "user-1", {
+      count: 10,
+      paginationKey: "user-1_1700000000000"
+    });
+    assert.deepEqual(result.results, [
+      { id: "42", score: 0.95 },
+      { id: "7", score: 0.80 }
+    ]);
+    assert.equal(result.paginationKey, "user-1_1700000000000");
+  });
+});
+
+test("queryPersonalizedFeed returns null paginationKey when Shaped omits it (last page)", async () => {
+  const env = { SHAPED_API_KEY: "test-key" };
+
+  await withMockedFetch(async () => {
+    return new Response(JSON.stringify({
+      results: [{ id: "99", score: 0.5 }]
+    }), { status: 200 });
+  }, async () => {
+    const result = await queryPersonalizedFeed(env, "user-2", { count: 20 });
+    assert.equal(result.results.length, 1);
+    assert.equal(result.paginationKey, null);
+  });
+});
+
+test("queryPersonalizedFeed omits pagination_key from request when not provided", async () => {
+  const env = { SHAPED_API_KEY: "test-key" };
+
+  await withMockedFetch(async (_input, init) => {
+    const body = JSON.parse(init.body);
+    assert.equal(Object.prototype.hasOwnProperty.call(body, "pagination_key"), false);
+    return new Response(JSON.stringify({ results: [] }), { status: 200 });
+  }, async () => {
+    const result = await queryPersonalizedFeed(env, "user-3");
+    assert.deepEqual(result, { results: [], paginationKey: null });
+  });
+});
+
+test("queryPersonalizedFeed returns empty results on failure", async () => {
+  const env = { SHAPED_API_KEY: "test-key" };
+
+  await withMockedFetch(async () => {
+    return new Response("Internal Server Error", { status: 500 });
+  }, async () => {
+    const result = await queryPersonalizedFeed(env, "user-4");
+    assert.deepEqual(result, { results: [], paginationKey: null });
   });
 });
 

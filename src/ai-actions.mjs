@@ -118,7 +118,7 @@ export const AI_ACTIONS = Object.freeze({
   translation: Object.freeze({
     key: "translation",
     cost: 1,
-    model: "o1-mini",
+    model: "o4-mini",
     maxTokens: 4000,
     cacheTtlMs: 3 * 24 * 60 * 60 * 1000,
     schema: TRANSLATION_SCHEMA
@@ -126,7 +126,7 @@ export const AI_ACTIONS = Object.freeze({
   structured_translation: Object.freeze({
     key: "structured_translation",
     cost: 1,
-    model: "o1-mini",
+    model: "o4-mini",
     maxTokens: 16000,
     cacheTtlMs: 3 * 24 * 60 * 60 * 1000
   }),
