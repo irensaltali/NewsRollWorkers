@@ -99,26 +99,26 @@ export const AI_ACTIONS = Object.freeze({
   headline: Object.freeze({
     key: "headline",
     cost: 0,
-    model: "o4-mini",
+    model: "gpt-5.4-mini-2026-03-17",
     maxTokens: 150
   }),
   topic_extraction: Object.freeze({
     key: "topic_extraction",
     cost: 0,
-    model: "o4-mini",
+    model: "gpt-5.4-mini-2026-03-17",
     maxTokens: 1000
   }),
   summary: Object.freeze({
     key: "summary",
     cost: 1,
-    model: "o4-mini",
+    model: "gpt-5.4-mini-2026-03-17",
     maxTokens: 2000,
     schema: SUMMARY_SCHEMA
   }),
   translation: Object.freeze({
     key: "translation",
     cost: 1,
-    model: "o4-mini",
+    model: "gpt-5.4-mini-2026-03-17",
     maxTokens: 4000,
     cacheTtlMs: 3 * 24 * 60 * 60 * 1000,
     schema: TRANSLATION_SCHEMA
@@ -126,14 +126,14 @@ export const AI_ACTIONS = Object.freeze({
   structured_translation: Object.freeze({
     key: "structured_translation",
     cost: 1,
-    model: "o4-mini",
+    model: "gpt-5.4-mini-2026-03-17",
     maxTokens: 16000,
     cacheTtlMs: 3 * 24 * 60 * 60 * 1000
   }),
   explain_technical: Object.freeze({
     key: "explain_technical",
     cost: 6,
-    model: "o4-mini",
+    model: "gpt-5.4-mini-2026-03-17",
     maxTokens: 4000,
     cacheTtlMs: 3 * 24 * 60 * 60 * 1000,
     schema: EXPLAIN_SCHEMA

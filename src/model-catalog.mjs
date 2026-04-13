@@ -4,8 +4,8 @@ const MODEL_CATALOG_TTL_MS = 5 * 60 * 1000;
 const OPENAI_SUPPORTED_MODELS = Object.freeze({
   text: Object.freeze([
     Object.freeze({
-      id: "o4-mini",
-      label: "o4-mini",
+      id: "gpt-5.4-mini-2026-03-17",
+      label: "gpt-5.4-mini-2026-03-17",
       pricing: Object.freeze({
         type: "tokens",
         currency: "USD",
@@ -13,18 +13,6 @@ const OPENAI_SUPPORTED_MODELS = Object.freeze({
         cachedInputPer1M: 0.275,
         outputPer1M: 4.4,
         display: "$1.10 input / $0.275 cached input / $4.40 output per 1M tokens"
-      })
-    }),
-    Object.freeze({
-      id: "o1-mini",
-      label: "o1-mini",
-      pricing: Object.freeze({
-        type: "tokens",
-        currency: "USD",
-        inputPer1M: 1.1,
-        cachedInputPer1M: 0.55,
-        outputPer1M: 4.4,
-        display: "$1.10 input / $0.55 cached input / $4.40 output per 1M tokens"
       })
     })
   ]),

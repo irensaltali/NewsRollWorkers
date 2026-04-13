@@ -11,7 +11,7 @@ export const DEFAULT_AI_PROMPT_CONFIGS = Object.freeze({
     key: "headline",
     name: "AI Headline",
     provider: "openai",
-    model: "o4-mini",
+    model: "gpt-5.4-mini-2026-03-17",
     maxCompletionTokens: 150,
     systemPrompt:
       "Write a single-sentence hook summary for the following article. Keep it under 120 characters. Create a sense of mystery or intrigue. No emojis, no clickbait. Output only the summary sentence, nothing else.",
@@ -22,7 +22,7 @@ export const DEFAULT_AI_PROMPT_CONFIGS = Object.freeze({
     key: "summary",
     name: "Story Summary",
     provider: "openai",
-    model: "o4-mini",
+    model: "gpt-5.4-mini-2026-03-17",
     maxCompletionTokens: 2000,
     systemPrompt:
       "You are a concise tech news analyst. Summarize the following article in 3-5 bullet points. Focus on key facts, implications, and why it matters. No fluff.",
@@ -33,7 +33,7 @@ export const DEFAULT_AI_PROMPT_CONFIGS = Object.freeze({
     key: "translation",
     name: "Structured Translation",
     provider: "openai",
-    model: "o1-mini",
+    model: "gpt-5.4-mini-2026-03-17",
     maxCompletionTokens: 16000,
     systemPrompt:
       "You translate news content into the requested language. Return valid JSON only. Preserve IDs exactly. Translate only human-readable text fields. Do not include markdown fences or commentary.",
@@ -45,7 +45,7 @@ export const DEFAULT_AI_PROMPT_CONFIGS = Object.freeze({
     key: "explain_simple",
     name: "Explain Simple",
     provider: "openai",
-    model: "o4-mini",
+    model: "gpt-5.4-mini-2026-03-17",
     maxCompletionTokens: 4000,
     systemPrompt:
       "Explain this tech article in plain language for an informed general reader. Avoid jargon where possible, define important terms briefly, and focus on the core idea and impact.",
@@ -56,7 +56,7 @@ export const DEFAULT_AI_PROMPT_CONFIGS = Object.freeze({
     key: "explain_technical",
     name: "Explain Technical",
     provider: "openai",
-    model: "o4-mini",
+    model: "gpt-5.4-mini-2026-03-17",
     maxCompletionTokens: 4000,
     systemPrompt:
       "Explain this tech article for a technical reader. Preserve precise terminology, architecture details, tradeoffs, and implementation implications.",
