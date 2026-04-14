@@ -40,6 +40,12 @@
 				"id": "4cd0d14a54554f23a9afd0006b23c2c3"
 			}
 	],
+	"r2_buckets": [
+		{
+			"binding": "MEDIA_BUCKET",
+			"bucket_name": "newsroll-media"
+		}
+	],
 	"analytics_engine_datasets": [
 		{
 			"binding": "EVENT_ANALYTICS",
@@ -84,6 +90,12 @@
 						"binding": "VISUAL_FEED_CACHE",
 						"id": "4cd0d14a54554f23a9afd0006b23c2c3"
 					}
+			],
+			"r2_buckets": [
+				{
+					"binding": "MEDIA_BUCKET",
+					"bucket_name": "newsroll-media"
+				}
 			],
 			"analytics_engine_datasets": [
 				{

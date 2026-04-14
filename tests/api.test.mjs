@@ -16,6 +16,59 @@ function createKvNamespace(initialValue = null) {
   };
 }
 
+function createMemoryBucket() {
+  const objects = new Map();
+
+  return {
+    objects,
+    async put(key, value, options = {}) {
+      let bytes;
+      if (typeof value === "string") {
+        bytes = new TextEncoder().encode(value);
+      } else if (value instanceof Uint8Array) {
+        bytes = new Uint8Array(value);
+      } else if (value?.getReader) {
+        const reader = value.getReader();
+        const chunks = [];
+        for (;;) {
+          const { done, value: chunk } = await reader.read();
+          if (done) break;
+          chunks.push(chunk);
+        }
+        const total = chunks.reduce((sum, chunk) => sum + chunk.length, 0);
+        bytes = new Uint8Array(total);
+        let offset = 0;
+        for (const chunk of chunks) {
+          bytes.set(chunk, offset);
+          offset += chunk.length;
+        }
+      } else {
+        bytes = new Uint8Array(await new Response(value).arrayBuffer());
+      }
+
+      objects.set(key, {
+        bytes,
+        contentType: options.httpMetadata?.contentType ?? "application/octet-stream"
+      });
+    },
+    async get(key) {
+      const entry = objects.get(key);
+      if (!entry) return null;
+      return {
+        async arrayBuffer() {
+          return entry.bytes.buffer.slice(
+            entry.bytes.byteOffset,
+            entry.bytes.byteOffset + entry.bytes.byteLength
+          );
+        },
+        async json() {
+          return JSON.parse(new TextDecoder().decode(entry.bytes));
+        }
+      };
+    }
+  };
+}
+
 const env = {
   APP_NAME: "NewsRoll",
   SUPABASE_JWT_SECRET: TEST_JWT_SECRET,
@@ -89,6 +142,247 @@ test("health endpoint responds", async () => {
   assert.equal(response.status, 200);
   const payload = await response.json();
   assert.equal(payload.ok, true);
+});
+
+test("admin test prompt can resolve crawl content without generating an image", async (t) => {
+  const originalFetch = globalThis.fetch;
+  const originalSetTimeout = globalThis.setTimeout;
+
+  globalThis.setTimeout = (fn, _ms, ...args) => {
+    fn(...args);
+    return 0;
+  };
+
+  globalThis.fetch = async (input, init = {}) => {
+    const url = String(input);
+
+    if (url.endsWith("/browser-rendering/crawl")) {
+      return Response.json({
+        success: true,
+        result: "job-admin-crawl-1"
+      });
+    }
+
+    if (url.includes("/browser-rendering/crawl/job-admin-crawl-1?limit=1")) {
+      return Response.json({
+        success: true,
+        result: {
+          id: "job-admin-crawl-1",
+          status: "completed",
+          records: [
+            {
+              url: "https://example.com/article",
+              status: "completed",
+              markdown: "# Crawled story\n\nBody from crawl",
+              json: {
+                title: "Crawled admin title",
+                headline: "Crawled admin headline.",
+                language: "en",
+                summary: "Crawled admin summary.",
+                topics: ["ai", "agents"]
+              },
+              metadata: { status: 200 }
+            }
+          ]
+        }
+      });
+    }
+
+    throw new Error(`Unexpected fetch call: ${url} ${init.method ?? "GET"}`);
+  };
+
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+    globalThis.setTimeout = originalSetTimeout;
+  });
+
+  const response = await worker.fetch(new Request("https://example.com/admin/test-prompt", {
+    method: "POST",
+    headers: {
+      authorization: "Bearer admin-secret",
+      "content-type": "application/json"
+    },
+    body: JSON.stringify({
+      url: "https://example.com/article",
+      generateImage: false
+    })
+  }), {
+    ...env,
+    ADMIN_API_KEY: "admin-secret",
+    CLOUDFLARE_ACCOUNT_ID: "account-123",
+    CLOUDFLARE_API_TOKEN: "token-123"
+  });
+
+  assert.equal(response.status, 200);
+  const payload = await response.json();
+  assert.equal(payload.status, "resolved");
+  assert.equal(payload.imageUrl, null);
+  assert.equal(payload.resolvedContent.title, "Crawled admin title");
+  assert.equal(payload.resolvedContent.sourceKind, "crawl");
+  assert.equal(payload.resolvedContent.textPreview.includes("Body from crawl"), true);
+  assert.deepEqual(payload.resolvedContent.metadata, {
+    title: "Crawled admin title",
+    headline: "Crawled admin headline.",
+    language: "en",
+    summary: "Crawled admin summary.",
+    topics: ["ai", "agents"]
+  });
+  assert.equal(payload.approval, null);
+});
+
+test("admin test prompt can save a preview and apply it to overwrite an existing item", async (t) => {
+  const originalFetch = globalThis.fetch;
+  const bucket = createMemoryBucket();
+  const writes = {
+    storyMedia: [],
+    storyContent: [],
+    promptRunEvents: []
+  };
+  const publishedEntry = {
+    story_id: 12345,
+    publish_sequence: 88,
+    source_endpoint: "tech",
+    published_at: "2026-04-08T10:00:00.000Z",
+    media_url: "https://media.example.com/old.webp",
+    media_status: "ready",
+    headline: "Old headline"
+  };
+
+  globalThis.fetch = async (input, init = {}) => {
+    const url = String(input);
+    const method = init.method ?? "GET";
+
+    if (url.startsWith("https://fal.run/")) {
+      return new Response(JSON.stringify({
+        images: [{ url: "https://assets.example.com/generated.webp" }],
+        request_id: "req-admin-1"
+      }), {
+        status: 200,
+        headers: {
+          "content-type": "application/json",
+          "x-fal-billable-units": "1"
+        }
+      });
+    }
+
+    if (url === "https://assets.example.com/generated.webp") {
+      return new Response(Uint8Array.from([1, 2, 3, 4]), {
+        status: 200,
+        headers: { "content-type": "image/webp" }
+      });
+    }
+
+    if (url.includes("/rest/v1/story_content")) {
+      if (method === "GET") {
+        return Response.json([]);
+      }
+      if (method === "POST") {
+        writes.storyContent.push(JSON.parse(init.body));
+        return Response.json([]);
+      }
+    }
+
+    if (url.includes("/rest/v1/published_feed_entries")) {
+      if (method === "GET") {
+        return Response.json([publishedEntry]);
+      }
+      if (method === "PATCH") {
+        Object.assign(publishedEntry, JSON.parse(init.body));
+        return Response.json([publishedEntry]);
+      }
+    }
+
+    if (url.includes("/rest/v1/story_media") && method === "POST") {
+      writes.storyMedia.push(JSON.parse(init.body));
+      return Response.json([]);
+    }
+
+    if (url.includes("/rest/v1/prompt_run_events") && method === "POST") {
+      writes.promptRunEvents.push(JSON.parse(init.body));
+      return Response.json([{ id: "prompt-run-1" }]);
+    }
+
+    throw new Error(`Unexpected fetch call: ${url} ${method}`);
+  };
+
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  const baseEnv = {
+    ...env,
+    ADMIN_API_KEY: "admin-secret",
+    FAL_API_KEY: "fal-test-key",
+    SUPABASE_URL: "https://example.supabase.co",
+    SUPABASE_SECRET_KEY: "service-role-test",
+    PUBLIC_MEDIA_BASE_URL: "https://media.example.com",
+    MEDIA_BUCKET: bucket,
+    VISUAL_FEED_CACHE: createKvNamespace(JSON.stringify({
+      version: 1,
+      items: [
+        {
+          storyId: 12345,
+          publishSequence: 88,
+          sourceEndpoint: "tech",
+          publishedAt: "2026-04-08T10:00:00.000Z",
+          mediaUrl: "https://media.example.com/old.webp",
+          readableUrl: "https://newsroll.invalid/v1/stories/12345/article",
+          mediaStatus: "ready",
+          headline: "Old headline"
+        }
+      ]
+    }))
+  };
+
+  const previewResponse = await worker.fetch(new Request("https://example.com/admin/test-prompt", {
+    method: "POST",
+    headers: {
+      authorization: "Bearer admin-secret",
+      "content-type": "application/json"
+    },
+    body: JSON.stringify({
+      storyId: 12345,
+      title: "Story title",
+      text: "Manual article body for admin test",
+      provider: "fal",
+      logPromptRun: false
+    })
+  }), baseEnv);
+
+  assert.equal(previewResponse.status, 200);
+  const previewPayload = await previewResponse.json();
+  assert.equal(previewPayload.status, "ready");
+  assert.equal(previewPayload.approval.canApply, true);
+  assert.equal(previewPayload.resolvedContent.sourceKind, "provided");
+  assert.equal(previewPayload.r2Url, previewPayload.approval.testAssetUrl);
+
+  const applyResponse = await worker.fetch(new Request("https://example.com/admin/test-prompt", {
+    method: "POST",
+    headers: {
+      authorization: "Bearer admin-secret",
+      "content-type": "application/json"
+    },
+    body: JSON.stringify({
+      applyApprovedTest: true,
+      testManifestKey: previewPayload.approval.testManifestKey
+    })
+  }), baseEnv);
+
+  assert.equal(applyResponse.status, 200);
+  const applyPayload = await applyResponse.json();
+  assert.equal(applyPayload.applied, true);
+  assert.equal(applyPayload.storyId, 12345);
+  assert.match(applyPayload.mediaKey, /^stories\/12345-[a-f0-9]+\.webp$/);
+  assert.equal(applyPayload.mediaUrl, publishedEntry.media_url);
+  assert.equal(publishedEntry.media_status, "ready");
+  assert.equal(writes.storyMedia.length, 1);
+  assert.equal(writes.storyMedia[0].story_id, 12345);
+  assert.equal(writes.storyContent.length > 0, true);
+  assert.equal(bucket.objects.has(previewPayload.approval.testManifestKey), true);
+  assert.equal(
+    JSON.parse(await baseEnv.VISUAL_FEED_CACHE.get()).items[0].mediaUrl,
+    applyPayload.mediaUrl
+  );
 });
 
 test("config treats false-like FOR_YOU_FEED_ENABLED values as disabled", async () => {

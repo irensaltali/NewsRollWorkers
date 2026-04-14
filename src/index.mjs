@@ -7,14 +7,20 @@ import {
   hasAIRequestReceipt,
   listPublishedVisualFeed,
   getPublishedFeedEntriesByStoryIds,
+  getLatestPublishedVisualFeedSnapshot,
   storeStoryExplanation,
   storeStoryExplanationData,
   getStoryExplanationData,
   getStorySummaryAndContent,
   storeStorySummary,
+  storeReadableContent,
+  storeHeadline,
   storeAIRequestReceipt,
   storeCachedAIResult,
-  getPromptTemplateById
+  getPromptTemplateById,
+  upsertMedia,
+  updatePublishedFeedEntry,
+  updatePublishedFeedEntryMediaProjection
 } from "./db.mjs";
 import { error, json, readJson, bearerToken } from "./http.mjs";
 import * as log from "./log.mjs";
@@ -22,10 +28,13 @@ import * as log from "./log.mjs";
 import { verifySupabaseJWT } from "./security.mjs";
 import {
   buildVisualFeedResponse,
+  makePublishedVisualFeedRow,
+  mergeVisualFeedSnapshot,
   parseVisualFeedCursor,
   parseVisualFeedLimit,
   readVisualFeedSnapshot,
-  toVisualFeedItem
+  toVisualFeedItem,
+  writeVisualFeedSnapshot
 } from "./visual-feed.mjs";
 import { validateEventBatch, storeEvents } from "./events.mjs";
 import { authorizeAIRequest, ensureAIRequestBalance, finalizeAIRequestCharge, CREDIT_COSTS } from "./credits.mjs";
@@ -45,7 +54,7 @@ import { resolveArticleContent, resolveArticleUrl } from "./article-content.mjs"
 import { promptConfigWithFallback, mediaTemplateWithFallback, buildPromptInput, clipPromptText } from "./prompt-config.mjs";
 import { generateImageWithProvider } from "./media-generation.mjs";
 import { crawlUrl } from "./browser-rendering.mjs";
-import { queryPersonalizedFeed } from "./shaped.mjs";
+import { queryPersonalizedFeed, upsertItem as upsertShapedItem } from "./shaped.mjs";
 
 function now() {
   return new Date().toISOString();
@@ -76,6 +85,150 @@ async function sha256Hex(value) {
   return Array.from(new Uint8Array(digest))
     .map((byte) => byte.toString(16).padStart(2, "0"))
     .join("");
+}
+
+function clipAdminPreviewText(value, maxLength = 1200) {
+  const normalized = normalizeText(value);
+  return normalized ? normalized.slice(0, maxLength) : "";
+}
+
+function mediaExtensionFromContentType(contentType, fallback = "webp") {
+  const normalized = normalizeText(contentType).toLowerCase();
+  if (normalized.includes("png")) return "png";
+  if (normalized.includes("jpeg") || normalized.includes("jpg")) return "jpg";
+  if (normalized.includes("webp")) return "webp";
+  if (normalized.includes("gif")) return "gif";
+  return fallback;
+}
+
+function decodeBase64(value) {
+  const binary = atob(value);
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) {
+    bytes[index] = binary.charCodeAt(index);
+  }
+  return bytes;
+}
+
+async function readAssetPayload(assetUrl) {
+  const normalizedUrl = normalizeText(assetUrl);
+  if (!normalizedUrl) {
+    throw new Error("Missing asset URL");
+  }
+
+  if (normalizedUrl.startsWith("data:")) {
+    const match = normalizedUrl.match(/^data:([^;,]+)?(?:;base64)?,(.*)$/s);
+    if (!match) {
+      throw new Error("Unsupported data URL");
+    }
+    const [, contentType = "application/octet-stream", rawPayload = ""] = match;
+    const isBase64 = normalizedUrl.includes(";base64,");
+    const bytes = isBase64
+      ? decodeBase64(rawPayload)
+      : new TextEncoder().encode(decodeURIComponent(rawPayload));
+    return {
+      bytes,
+      contentType,
+      sourceUrl: normalizedUrl
+    };
+  }
+
+  const response = await fetch(normalizedUrl);
+  if (!response.ok) {
+    throw new Error(`Asset fetch failed: HTTP ${response.status}`);
+  }
+
+  return {
+    bytes: new Uint8Array(await response.arrayBuffer()),
+    contentType: response.headers.get("content-type") ?? "application/octet-stream",
+    sourceUrl: normalizedUrl
+  };
+}
+
+function adminTestAssetKeys(storyId, runId, extension) {
+  const storyPart = Number.isInteger(Number(storyId)) && Number(storyId) > 0 ? String(storyId) : "adhoc";
+  return {
+    assetKey: `test-prompts/${storyPart}/${runId}.${extension}`,
+    manifestKey: `test-prompts/${storyPart}/${runId}.json`
+  };
+}
+
+async function writeAdminTestAsset(env, payload) {
+  if (!env.MEDIA_BUCKET?.put) {
+    return null;
+  }
+
+  const runId = crypto.randomUUID();
+  const assetPayload = await readAssetPayload(payload.assetUrl);
+  const extension = mediaExtensionFromContentType(assetPayload.contentType);
+  const keys = adminTestAssetKeys(payload.storyId, runId, extension);
+
+  await env.MEDIA_BUCKET.put(keys.assetKey, assetPayload.bytes, {
+    httpMetadata: { contentType: assetPayload.contentType }
+  });
+
+  const manifest = {
+    version: 1,
+    runId,
+    createdAt: now(),
+    storyId: payload.storyId ?? null,
+    sourceEndpoint: payload.sourceEndpoint ?? null,
+    sourceUrl: payload.sourceUrl ?? null,
+    title: payload.title ?? "",
+    articleText: payload.articleText ?? "",
+    sourceKind: payload.sourceKind ?? null,
+    crawlMetadata: payload.crawlMetadata ?? null,
+    resolvedPrompt: payload.resolvedPrompt ?? "",
+    templateUsed: payload.templateUsed ?? null,
+    settings: payload.settings ?? {},
+    provider: payload.provider ?? null,
+    model: payload.model ?? null,
+    latencyMs: payload.latencyMs ?? null,
+    billableUnits: payload.billableUnits ?? null,
+    assetKey: keys.assetKey,
+    assetContentType: assetPayload.contentType
+  };
+
+  await env.MEDIA_BUCKET.put(keys.manifestKey, JSON.stringify(manifest, null, 2), {
+    httpMetadata: { contentType: "application/json; charset=utf-8" }
+  });
+
+  return {
+    ...manifest,
+    manifestKey: keys.manifestKey,
+    assetUrl: publicMediaUrlFor(env, keys.assetKey)
+  };
+}
+
+async function readAdminTestManifest(env, manifestKey) {
+  if (!env.MEDIA_BUCKET?.get) {
+    throw new Error("MEDIA_BUCKET binding is required to apply a saved test");
+  }
+
+  const object = await env.MEDIA_BUCKET.get(manifestKey);
+  if (!object) {
+    throw new Error("Saved test manifest not found");
+  }
+
+  return object.json();
+}
+
+async function refreshPublishedFeedSnapshot(env, publishedEntry) {
+  const currentSnapshot =
+    (await readVisualFeedSnapshot(env)) ??
+    (await getLatestPublishedVisualFeedSnapshot(env));
+
+  const nextRow = makePublishedVisualFeedRow(env, {
+    storyId: publishedEntry.storyId,
+    publishSequence: publishedEntry.publishSequence,
+    sourceEndpoint: publishedEntry.sourceEndpoint,
+    publishedAt: publishedEntry.publishedAt,
+    mediaUrl: publishedEntry.mediaUrl,
+    mediaStatus: publishedEntry.mediaStatus,
+    headline: publishedEntry.headline
+  });
+
+  await writeVisualFeedSnapshot(env, mergeVisualFeedSnapshot(currentSnapshot ?? [], nextRow));
 }
 
 function normalizeTranslationStory(storyId, story) {
@@ -927,49 +1080,47 @@ function requireAdminKey(request, env) {
   return null;
 }
 
-async function handleAdminTestPrompt(request, env) {
-  const authErr = requireAdminKey(request, env);
-  if (authErr) return authErr;
-
-  const body = await readJson(request);
-  if (!body) return error("Invalid JSON body", 400);
-
-  const start = Date.now();
-
-  // ── Resolve content ──────────────────────────────────────────────────────
+async function resolveAdminTestContent(env, body) {
   let title = "";
   let articleText = "";
   let sourceKind = "provided";
   let crawlMetadata = null;
+  let sourceUrl = normalizeText(body.url);
 
   if (body.storyId) {
     const resolved = await resolveArticleContent(env, body.storyId, {
       title: body.title ?? "",
-      url: body.url ?? null
+      text: body.text ?? "",
+      url: sourceUrl || null
     }, { allowCrawl: false });
     title = resolved.title || body.title || "";
     articleText = resolved.text || "";
     sourceKind = resolved.sourceKind ?? "cache";
     crawlMetadata = resolved.metadata ?? null;
-    if (!articleText && body.url) {
+
+    if (!articleText && sourceUrl) {
       const withCrawl = await resolveArticleContent(env, body.storyId, {
         title: body.title ?? "",
-        url: body.url
+        text: body.text ?? "",
+        url: sourceUrl
       });
       title = withCrawl.title || title;
       articleText = withCrawl.text || "";
       sourceKind = withCrawl.sourceKind ?? sourceKind;
       crawlMetadata = withCrawl.metadata ?? crawlMetadata;
     }
-  } else if (body.url) {
-    const crawlResult = await crawlUrl(env, body.url);
+  } else if (sourceUrl) {
+    const crawlResult = await crawlUrl(env, sourceUrl);
     if (crawlResult.success && crawlResult.markdown) {
       articleText = crawlResult.markdown;
       sourceKind = "crawl";
       crawlMetadata = crawlResult.metadata ?? null;
       title = crawlMetadata?.title || body.title || "";
     } else {
-      return error("Crawl failed", 422, { crawlError: crawlResult.error ?? "unknown" });
+      throw Object.assign(new Error("Crawl failed"), {
+        status: 422,
+        details: { crawlError: crawlResult.error ?? "unknown" }
+      });
     }
   } else {
     title = body.title || "";
@@ -978,10 +1129,21 @@ async function handleAdminTestPrompt(request, env) {
   }
 
   if (!title && !articleText) {
-    return error("No content to generate from. Provide storyId, url, or title/text.", 400);
+    throw Object.assign(new Error("No content to generate from. Provide storyId, url, or title/text."), {
+      status: 400
+    });
   }
 
-  // ── Resolve template ────────────────────────────────────────────────────
+  return {
+    title,
+    articleText,
+    sourceKind,
+    crawlMetadata,
+    sourceUrl: sourceUrl || null
+  };
+}
+
+async function resolveAdminTestTemplate(env, body) {
   let template;
   if (body.templateText) {
     template = {
@@ -995,7 +1157,9 @@ async function handleAdminTestPrompt(request, env) {
     };
   } else if (body.templateId) {
     const dbTemplate = await getPromptTemplateById(env, body.templateId);
-    if (!dbTemplate) return error("Template not found", 404);
+    if (!dbTemplate) {
+      throw Object.assign(new Error("Template not found"), { status: 404 });
+    }
     template = dbTemplate;
     if (body.provider) template.provider = body.provider;
     if (body.model) template.model = body.model;
@@ -1007,89 +1171,353 @@ async function handleAdminTestPrompt(request, env) {
     if (body.settings) template.settings = { ...template.settings, ...body.settings };
   }
 
-  template = mediaTemplateWithFallback(template, "image");
+  return mediaTemplateWithFallback(template, "image");
+}
 
-  // ── Build prompt ────────────────────────────────────────────────────────
-  const resolvedPrompt = buildPromptInput(template.templateText, {
-    title,
-    sourceText: clipPromptText(articleText, 1200)
-  });
-
-  // ── Generate image ──────────────────────────────────────────────────────
-  const genStart = Date.now();
-  const result = await generateImageWithProvider(env, {
-    provider: template.provider,
-    model: template.model,
-    settings: template.settings,
-    prompt: resolvedPrompt,
-    storyId: body.storyId ?? null
-  });
-  const latencyMs = Date.now() - genStart;
-
-  // ── Optional R2 upload ──────────────────────────────────────────────────
-  let r2Url = null;
-  if (body.uploadToR2 && result.status === "ready" && result.url && env.MEDIA_BUCKET?.put) {
-    const imageResponse = await fetch(result.url);
-    if (imageResponse.ok) {
-      const key = `test-prompts/${Date.now()}.webp`;
-      await env.MEDIA_BUCKET.put(key, imageResponse.body, {
-        httpMetadata: { contentType: imageResponse.headers.get("content-type") ?? "image/webp" }
-      });
-      r2Url = publicMediaUrlFor(env, key);
-    }
+async function applyApprovedAdminTest(env, body) {
+  const manifestKey = normalizeText(body.testManifestKey);
+  if (!manifestKey) {
+    return error("testManifestKey is required", 400);
   }
 
-  // ── Optional prompt run event ───────────────────────────────────────────
-  let promptRunEventId = null;
-  if (body.logPromptRun !== false) {
-    try {
-      const eventResult = await createPromptRunEvent(env, {
-        source: "admin_test_prompt",
-        promptKind: "media",
-        promptKey: template.name ?? "adhoc",
-        promptTemplateId: template.id ?? null,
-        provider: result.provider ?? template.provider ?? "fal",
-        model: result.model ?? template.model ?? null,
-        modality: "image",
-        status: result.status === "ready" ? "ready" : "failed",
-        latencyMs,
-        requestExcerpt: resolvedPrompt.slice(0, 500),
-        responseExcerpt: result.url ?? null,
-        artifactUrl: result.url ?? null,
-        errorText: result.errorText ?? null,
-        storyId: body.storyId ?? null
-      });
-      promptRunEventId = eventResult?.id ?? null;
-    } catch (err) {
-      log.warn({ event: "test_prompt_log_fail", ...log.fmtError(err) });
-    }
+  const manifest = await readAdminTestManifest(env, manifestKey);
+  const storyId = Number(manifest.storyId);
+  if (!Number.isInteger(storyId) || storyId <= 0) {
+    return error("Saved test manifest is missing a valid storyId", 422);
   }
+
+  if (body.storyId != null && Number(body.storyId) !== storyId) {
+    return error("storyId does not match the saved test manifest", 409);
+  }
+
+  const existingEntry = (await getPublishedFeedEntriesByStoryIds(env, [storyId]))[0] ?? null;
+  if (!existingEntry) {
+    return error("Published feed item not found for storyId", 404);
+  }
+
+  if (!env.MEDIA_BUCKET?.get || !env.MEDIA_BUCKET?.put) {
+    return error("MEDIA_BUCKET binding is required to apply a saved test", 503);
+  }
+
+  const assetObject = await env.MEDIA_BUCKET.get(manifest.assetKey);
+  if (!assetObject) {
+    return error("Saved test asset not found", 404);
+  }
+
+  const articleText = typeof manifest.articleText === "string" ? manifest.articleText : "";
+  const fallbackText = `${manifest.title ?? ""} ${manifest.sourceUrl ?? ""}`.trim() || "News story";
+  const contentHash = await sha256Hex(articleText || fallbackText);
+  const extension = mediaExtensionFromContentType(manifest.assetContentType, "webp");
+  const mediaKey = `stories/${storyId}-${contentHash}.${extension}`;
+  const mediaBytes = new Uint8Array(await assetObject.arrayBuffer());
+  await env.MEDIA_BUCKET.put(mediaKey, mediaBytes, {
+    httpMetadata: { contentType: manifest.assetContentType ?? "image/webp" }
+  });
+
+  const mediaUrl = publicMediaUrlFor(env, mediaKey);
+  const updatedAt = now();
+  const crawlMetadata = manifest.crawlMetadata && typeof manifest.crawlMetadata === "object"
+    ? manifest.crawlMetadata
+    : null;
+  const headline = crawlMetadata?.headline ?? existingEntry.headline ?? null;
+  const summary = crawlMetadata?.summary ?? null;
+  const topics = Array.isArray(crawlMetadata?.topics) ? crawlMetadata.topics : null;
+  const sourceUrl = normalizeText(manifest.sourceUrl) || null;
+  const sourceKind = normalizeText(manifest.sourceKind) || null;
+
+  if (articleText) {
+    await storeReadableContent(env, {
+      storyId,
+      sourceKind: sourceKind ?? "provided",
+      extractedText: articleText,
+      sourceUrl,
+      updatedAt
+    });
+  }
+
+  if (headline) {
+    await storeHeadline(env, storyId, headline);
+  }
+
+  if (summary || topics) {
+    await storeStorySummary(env, {
+      storyId,
+      sourceUrl,
+      summary,
+      topics,
+      updatedAt
+    });
+  }
+
+  await upsertMedia(env, {
+    storyId,
+    status: "ready",
+    falRequestId: `admin_test:${manifest.runId ?? crypto.randomUUID()}`,
+    mediaKey,
+    mediaUrl,
+    failureReason: null,
+    attempts: 1,
+    updatedAt,
+    promptTemplateId: manifest.templateUsed?.id ?? null,
+    imagePrompt: manifest.resolvedPrompt ?? null,
+    mediaType: "image",
+    provider: manifest.provider ?? null,
+    model: manifest.model ?? null,
+    generationLatencyMs: Number.isFinite(manifest.latencyMs) ? manifest.latencyMs : null
+  });
+
+  await updatePublishedFeedEntry(env, storyId, {
+    mediaUrl,
+    mediaStatus: "ready",
+    headline
+  });
+
+  await updatePublishedFeedEntryMediaProjection(env, storyId, {
+    mediaType: "image",
+    mediaProvider: manifest.provider ?? null,
+    mediaModel: manifest.model ?? null,
+    generationStatus: "ready",
+    generationLatencyMs: Number.isFinite(manifest.latencyMs) ? manifest.latencyMs : null,
+    generationCostUsd: null,
+    promptTemplateId: manifest.templateUsed?.id ?? null,
+    promptTemplateName: manifest.templateUsed?.name ?? null
+  });
+
+  const updatedEntry = {
+    ...existingEntry,
+    mediaUrl,
+    mediaStatus: "ready",
+    headline
+  };
+
+  await refreshPublishedFeedSnapshot(env, updatedEntry);
+
+  const shapedResult = await upsertShapedItem(env, {
+    storyId,
+    headline,
+    title: manifest.title ?? "",
+    summary,
+    category: existingEntry.sourceEndpoint,
+    topics,
+    publishedAt: existingEntry.publishedAt,
+    mediaUrl,
+    mediaType: "image",
+    mediaProvider: manifest.provider ?? null,
+    mediaModel: manifest.model ?? null,
+    promptTemplateId: manifest.templateUsed?.id ?? null
+  });
 
   return json({
-    status: result.status,
-    imageUrl: result.url ?? null,
-    r2Url,
-    provider: result.provider ?? template.provider,
-    model: result.model ?? template.model,
-    resolvedPrompt,
-    templateUsed: {
-      id: template.id,
-      name: template.name,
-      templateText: template.templateText
+    ok: true,
+    storyId,
+    applied: true,
+    testManifestKey: manifestKey,
+    mediaKey,
+    mediaUrl,
+    publishedEntry: {
+      storyId,
+      publishSequence: existingEntry.publishSequence,
+      publishedAt: existingEntry.publishedAt,
+      sourceEndpoint: existingEntry.sourceEndpoint,
+      mediaStatus: "ready",
+      headline
     },
-    settings: template.settings,
-    resolvedContent: {
-      title,
-      textLength: articleText.length,
-      sourceKind,
-      metadata: crawlMetadata
+    contentUpdated: {
+      readableContent: Boolean(articleText),
+      headline: Boolean(headline),
+      summary: Boolean(summary),
+      topics: Array.isArray(topics) ? topics.length : 0
     },
-    latencyMs,
-    totalMs: Date.now() - start,
-    error: result.errorText ?? null,
-    promptRunEventId,
-    billableUnits: result.billableUnits ?? null
+    shaped: shapedResult
   });
+}
+
+async function handleAdminTestPrompt(request, env) {
+  const authErr = requireAdminKey(request, env);
+  if (authErr) return authErr;
+
+  const body = await readJson(request);
+  if (!body) return error("Invalid JSON body", 400);
+
+  if (body.applyApprovedTest === true || body.testManifestKey) {
+    try {
+      return await applyApprovedAdminTest(env, body);
+    } catch (err) {
+      return error(err instanceof Error ? err.message : "Failed to apply saved test", err?.status ?? 500, err?.details);
+    }
+  }
+
+  const start = Date.now();
+
+  try {
+    const storyId = Number.isInteger(Number(body.storyId)) && Number(body.storyId) > 0
+      ? Number(body.storyId)
+      : null;
+    const existingEntry = storyId
+      ? (await getPublishedFeedEntriesByStoryIds(env, [storyId]))[0] ?? null
+      : null;
+    const resolvedContent = await resolveAdminTestContent(env, body);
+    const shouldGenerateImage = body.generateImage !== false;
+
+    if (!shouldGenerateImage) {
+      return json({
+        status: "resolved",
+        imageUrl: null,
+        r2Url: null,
+        provider: null,
+        model: null,
+        resolvedPrompt: null,
+        templateUsed: null,
+        settings: null,
+        resolvedContent: {
+          title: resolvedContent.title,
+          textLength: resolvedContent.articleText.length,
+          textPreview: clipAdminPreviewText(resolvedContent.articleText),
+          sourceKind: resolvedContent.sourceKind,
+          sourceUrl: resolvedContent.sourceUrl,
+          metadata: resolvedContent.crawlMetadata
+        },
+        targetStory: existingEntry,
+        latencyMs: 0,
+        totalMs: Date.now() - start,
+        error: null,
+        promptRunEventId: null,
+        billableUnits: null,
+        approval: null
+      });
+    }
+
+    const template = await resolveAdminTestTemplate(env, body);
+    const resolvedPrompt = buildPromptInput(template.templateText, {
+      title: resolvedContent.title,
+      sourceText: clipPromptText(resolvedContent.articleText, 1200)
+    });
+
+    const genStart = Date.now();
+    const result = await generateImageWithProvider(env, {
+      provider: template.provider,
+      model: template.model,
+      settings: template.settings,
+      prompt: resolvedPrompt,
+      storyId
+    });
+    const latencyMs = Date.now() - genStart;
+
+    let approval = null;
+    let r2Url = null;
+    if (result.status === "ready" && result.url) {
+      if (storyId) {
+        approval = await writeAdminTestAsset(env, {
+          storyId,
+          sourceEndpoint: existingEntry?.sourceEndpoint ?? null,
+          sourceUrl: resolvedContent.sourceUrl,
+          title: resolvedContent.title,
+          articleText: resolvedContent.articleText,
+          sourceKind: resolvedContent.sourceKind,
+          crawlMetadata: resolvedContent.crawlMetadata,
+          resolvedPrompt,
+          templateUsed: {
+            id: template.id,
+            name: template.name,
+            templateText: template.templateText
+          },
+          settings: template.settings,
+          provider: result.provider ?? template.provider,
+          model: result.model ?? template.model,
+          latencyMs,
+          billableUnits: result.billableUnits ?? null,
+          assetUrl: result.url
+        });
+        r2Url = approval?.assetUrl ?? null;
+      } else if (body.uploadToR2 && env.MEDIA_BUCKET?.put) {
+        const saved = await writeAdminTestAsset(env, {
+          storyId: null,
+          sourceEndpoint: null,
+          sourceUrl: resolvedContent.sourceUrl,
+          title: resolvedContent.title,
+          articleText: resolvedContent.articleText,
+          sourceKind: resolvedContent.sourceKind,
+          crawlMetadata: resolvedContent.crawlMetadata,
+          resolvedPrompt,
+          templateUsed: {
+            id: template.id,
+            name: template.name,
+            templateText: template.templateText
+          },
+          settings: template.settings,
+          provider: result.provider ?? template.provider,
+          model: result.model ?? template.model,
+          latencyMs,
+          billableUnits: result.billableUnits ?? null,
+          assetUrl: result.url
+        });
+        r2Url = saved?.assetUrl ?? null;
+      }
+    }
+
+    let promptRunEventId = null;
+    if (body.logPromptRun !== false) {
+      try {
+        const eventResult = await createPromptRunEvent(env, {
+          source: "admin_test_prompt",
+          promptKind: "media",
+          promptKey: template.name ?? "adhoc",
+          promptTemplateId: template.id ?? null,
+          provider: result.provider ?? template.provider ?? "fal",
+          model: result.model ?? template.model ?? null,
+          modality: "image",
+          status: result.status === "ready" ? "ready" : "failed",
+          latencyMs,
+          requestExcerpt: resolvedPrompt.slice(0, 500),
+          responseExcerpt: result.url ?? null,
+          artifactUrl: approval?.assetUrl ?? result.url ?? null,
+          errorText: result.errorText ?? null,
+          storyId
+        });
+        promptRunEventId = eventResult?.id ?? null;
+      } catch (err) {
+        log.warn({ event: "test_prompt_log_fail", ...log.fmtError(err) });
+      }
+    }
+
+    return json({
+      status: result.status,
+      imageUrl: result.url ?? null,
+      r2Url,
+      provider: result.provider ?? template.provider,
+      model: result.model ?? template.model,
+      resolvedPrompt,
+      templateUsed: {
+        id: template.id,
+        name: template.name,
+        templateText: template.templateText
+      },
+      settings: template.settings,
+      resolvedContent: {
+        title: resolvedContent.title,
+        textLength: resolvedContent.articleText.length,
+        textPreview: clipAdminPreviewText(resolvedContent.articleText),
+        sourceKind: resolvedContent.sourceKind,
+        sourceUrl: resolvedContent.sourceUrl,
+        metadata: resolvedContent.crawlMetadata
+      },
+      targetStory: existingEntry,
+      latencyMs,
+      totalMs: Date.now() - start,
+      error: result.errorText ?? null,
+      promptRunEventId,
+      billableUnits: result.billableUnits ?? null,
+      approval: approval ? {
+        canApply: true,
+        storyId,
+        testManifestKey: approval.manifestKey,
+        testAssetKey: approval.assetKey,
+        testAssetUrl: approval.assetUrl
+      } : null
+    });
+  } catch (err) {
+    return error(err instanceof Error ? err.message : "Admin test failed", err?.status ?? 500, err?.details);
+  }
 }
 
 const ROUTES = [

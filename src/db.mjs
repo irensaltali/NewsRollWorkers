@@ -176,6 +176,28 @@ export async function getPublishedFeedEntriesByStoryIds(env, storyIds) {
   return storyIds.map((id) => rowsByStoryId.get(Number(id))).filter(Boolean);
 }
 
+export async function updatePublishedFeedEntry(env, storyId, fields) {
+  if (!hasDB(env)) return false;
+
+  const updates = {};
+  assignDefined(updates, "source_endpoint", fields.sourceEndpoint);
+  assignDefined(updates, "published_at", fields.publishedAt);
+  assignDefined(updates, "media_url", fields.mediaUrl);
+  assignDefined(updates, "media_status", fields.mediaStatus);
+  assignDefined(updates, "headline", fields.headline);
+
+  if (Object.keys(updates).length === 0) {
+    return true;
+  }
+
+  const { error } = await getDB(env)
+    .from("published_feed_entries")
+    .update(updates)
+    .eq("story_id", storyId);
+
+  return !error;
+}
+
 export async function getLatestPublishedVisualFeedSnapshot(env, limit = 100) {
   return listPublishedVisualFeed(env, { limit });
 }
