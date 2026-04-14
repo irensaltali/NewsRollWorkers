@@ -13,6 +13,7 @@
 	// - REVENUECAT_SECRET_KEY
 	// - CLOUDFLARE_API_TOKEN
 	// - SHAPED_API_KEY
+	// - FIRECRAWL_API_KEYS
 	"vars": {
 		"APP_NAME": "NewsRoll",
 		"ENVIRONMENT": "production",

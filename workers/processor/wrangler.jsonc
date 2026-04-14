@@ -12,6 +12,7 @@
 	// - FAL_API_KEY
 	// - CLOUDFLARE_API_TOKEN
 	// - SHAPED_API_KEY
+	// - FIRECRAWL_API_KEYS
 	"migrations": [
 		{
 			"tag": "v1-global-visual-feed-coordinator",

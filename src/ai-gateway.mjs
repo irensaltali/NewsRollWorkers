@@ -2,7 +2,7 @@ import * as log from "./log.mjs";
 import { AI_ACTIONS } from "./ai-actions.mjs";
 import { getAIPromptConfig } from "./db.mjs";
 import { buildPromptInput, clipPromptText, promptConfigWithFallback } from "./prompt-config.mjs";
-import { crawlUrlWithAI } from "./browser-rendering.mjs";
+import { crawlWithFallbackAI } from "./crawl-provider.mjs";
 
 
 export function hasOpenAIConfig(env) {
@@ -390,7 +390,7 @@ export async function generateStructuredTranslation(env, payload, options = {}) 
 // ── Cloudflare AI Crawl Generators ──────────────────────────────────
 
 async function generateViaCrawl(env, url, { storyId, prompt, schema, validator, validatorArgs = [], options = {} }) {
-  const crawlResult = await crawlUrlWithAI(env, url, {
+  const crawlResult = await crawlWithFallbackAI(env, url, {
     storyId,
     prompt,
     responseSchema: schema

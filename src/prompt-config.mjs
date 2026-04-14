@@ -112,7 +112,8 @@ export function parsePromptSettings(value, fallback = {}) {
 }
 
 export function renderPromptTemplate(template, variables = {}) {
-  return String(template ?? "").replace(/\{\{(\w+)\}\}/g, (_match, key) => {
+  return String(template ?? "").replace(/\{\{(\w+)\}\}|\$\{(\w+)\}/g, (_match, mustacheKey, dollarKey) => {
+    const key = mustacheKey ?? dollarKey;
     const value = variables[key];
     return value == null ? "" : String(value);
   });

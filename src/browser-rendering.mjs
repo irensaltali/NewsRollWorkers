@@ -60,6 +60,23 @@ function normalizeEnvString(value) {
   return typeof value === "string" ? value.trim() : "";
 }
 
+export function classifyHttpFailure(httpStatus, errorText) {
+  if (httpStatus === 404) return "permanent";
+  if (httpStatus >= 400 && httpStatus < 500) return "http_error";
+  if (httpStatus >= 500) return "http_error";
+  const lower = typeof errorText === "string" ? errorText.toLowerCase() : "";
+  if (lower.includes("robots.txt") || lower.includes("disallowed")) return "robots_blocked";
+  return "no_content";
+}
+
+function classifyErrorFailureKind(err) {
+  if (err && err.failureKind) return err.failureKind;
+  const msg = err instanceof Error ? err.message : String(err ?? "");
+  if (/timeout/i.test(msg)) return "timeout";
+  if (/missing.*config/i.test(msg)) return "config_error";
+  return "unknown";
+}
+
 function buildCloudflareApiUrl(accountId, path, searchParams = null) {
   const url = new URL(`https://api.cloudflare.com/client/v4/accounts/${accountId}/browser-rendering/${path}`);
   if (searchParams) {
@@ -96,7 +113,9 @@ function getCloudflareCrawlConfig(env) {
   }
 
   if (missing.length > 0) {
-    throw new Error(`Missing Cloudflare crawl configuration: ${missing.join(", ")}`);
+    const err = new Error(`Missing Cloudflare crawl configuration: ${missing.join(", ")}`);
+    err.failureKind = "config_error";
+    throw err;
   }
 
   return { accountId, apiToken };
@@ -394,7 +413,9 @@ async function waitForCrawlJob(accountId, apiToken, jobId, { maxAttempts = CRAWL
     delayMs = Math.min(delayMs * 2, maxDelayMs);
   }
 
-  throw new Error("Cloudflare crawl job did not complete within timeout");
+  const err = new Error("Cloudflare crawl job did not complete within timeout");
+  err.failureKind = "timeout";
+  throw err;
 }
 
 export async function crawlUrlWithAI(env, url, { storyId = null, limit = DEFAULT_CRAWL_LIMIT, prompt, responseSchema } = {}) {
@@ -434,7 +455,7 @@ export async function crawlUrlWithAI(env, url, { storyId = null, limit = DEFAULT
     if (result?.status !== "completed") {
       const errMsg = `Cloudflare crawl job ended with status: ${result?.status ?? "unknown"}`;
       log.warn({ event: "crawl_ai_job_not_completed", url, jobId, status: result?.status ?? "unknown" });
-      return { json: null, markdown: null, success: false, error: errMsg };
+      return { json: null, markdown: null, success: false, error: errMsg, failureKind: "timeout" };
     }
 
     if (!Array.isArray(result?.records) || result.records.length === 0) {
@@ -450,15 +471,16 @@ export async function crawlUrlWithAI(env, url, { storyId = null, limit = DEFAULT
 
     if (!json) {
       log.warn({ event: "crawl_ai_no_json", url, jobId, error: jsonError });
-      return { json: null, markdown, success: false, error: jsonError };
+      return { json: null, markdown, success: false, error: jsonError, failureKind: "no_content" };
     }
 
     log.info({ event: "crawl_ai_success", url, jobId });
-    return { json, markdown, success: true, error: null };
+    return { json, markdown, success: true, error: null, failureKind: null };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    log.error({ event: "crawl_ai_error", url, error: message });
-    return { json: null, markdown: null, success: false, error: message };
+    const failureKind = classifyErrorFailureKind(err);
+    log.error({ event: "crawl_ai_error", url, error: message, failureKind });
+    return { json: null, markdown: null, success: false, error: message, failureKind };
   }
 }
 
@@ -485,7 +507,7 @@ export async function checkCrawlJobStatus(env, jobId) {
     }
 
     if (result?.status !== "completed") {
-      return { status: "failed", error: `Crawl job ended with status: ${result?.status ?? "unknown"}` };
+      return { status: "failed", error: `Crawl job ended with status: ${result?.status ?? "unknown"}`, failureKind: "timeout" };
     }
 
     if (!Array.isArray(result?.records) || result.records.length === 0) {
@@ -496,11 +518,12 @@ export async function checkCrawlJobStatus(env, jobId) {
     const { json } = readCrawlJson(result, null);
     const metadata = normalizeArticleMetadata(json);
 
-    return { status: "completed", markdown: markdown ?? null, metadata: metadata ?? null };
+    return { status: "completed", markdown: markdown ?? null, metadata: metadata ?? null, failureKind: null };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    log.error({ event: "crawl_job_status_error", jobId, error: message });
-    return { status: "failed", error: message };
+    const failureKind = classifyErrorFailureKind(err);
+    log.error({ event: "crawl_job_status_error", jobId, error: message, failureKind });
+    return { status: "failed", error: message, failureKind };
   }
 }
 
@@ -521,7 +544,8 @@ export async function crawlUrl(env, url, { storyId = null, limit = DEFAULT_CRAWL
       return {
         markdown: null,
         success: false,
-        error: errMsg
+        error: errMsg,
+        failureKind: "timeout"
       };
     }
 
@@ -537,6 +561,7 @@ export async function crawlUrl(env, url, { storyId = null, limit = DEFAULT_CRAWL
     const { markdown, error, truncated } = readCrawlMarkdown(result, url);
     if (!markdown) {
       const records = Array.isArray(result?.records) ? result.records : [];
+      const httpStatus = records[0]?.metadata?.status ?? null;
       log.warn({
         event: "crawl_no_markdown",
         url,
@@ -550,7 +575,7 @@ export async function crawlUrl(env, url, { storyId = null, limit = DEFAULT_CRAWL
           markdownLength: typeof r?.markdown === "string" ? r.markdown.length : 0
         }))
       });
-      return { markdown: null, success: false, error };
+      return { markdown: null, success: false, error, failureKind: classifyHttpFailure(httpStatus, error) };
     }
 
     const { json, error: jsonError } = readCrawlJson(result, url);
@@ -594,10 +619,11 @@ export async function crawlUrl(env, url, { storyId = null, limit = DEFAULT_CRAWL
       truncated: Boolean(truncated),
       rawJsonKey: rawJsonKey ?? null
     });
-    return { markdown, metadata, success: true, rawJsonKey };
+    return { markdown, metadata, success: true, rawJsonKey, failureKind: null };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    log.error({ event: "crawl_error", url, error: message });
-    return { markdown: null, success: false, error: message };
+    const failureKind = classifyErrorFailureKind(err);
+    log.error({ event: "crawl_error", url, error: message, failureKind });
+    return { markdown: null, success: false, error: message, failureKind };
   }
 }

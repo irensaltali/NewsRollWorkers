@@ -217,6 +217,19 @@ export async function getMaxPublishedVisualFeedSequence(env) {
   return Number(data?.publish_sequence ?? 0);
 }
 
+export async function getMaxStoryId(env) {
+  if (!hasDB(env)) return 0;
+
+  const { data } = await getDB(env)
+    .from("feed_entries")
+    .select("story_id")
+    .order("story_id", { ascending: false })
+    .limit(1)
+    .single();
+
+  return Number(data?.story_id ?? 0);
+}
+
 export async function isStoryPublished(env, storyId) {
   if (!hasDB(env)) return fixtureFeed.some((item) => item.storyId === storyId);
 

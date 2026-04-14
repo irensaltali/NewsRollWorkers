@@ -16,6 +16,19 @@ function createKvNamespace(initialValue = null) {
   };
 }
 
+function createKeyedKvNamespace() {
+  const store = {};
+  return {
+    store,
+    async get(key) {
+      return store[key] ?? null;
+    },
+    async put(key, value) {
+      store[key] = value;
+    }
+  };
+}
+
 function createMemoryBucket() {
   const objects = new Map();
 
@@ -564,4 +577,159 @@ test("worker does not proxy public story reads for the app", async () => {
   );
 
   assert.equal(response.status, 404);
+});
+
+// ── Async Crawl Endpoints ─────────────────────────────────────────────
+
+test("POST /admin/media/crawl returns running task immediately", async (t) => {
+  const originalFetch = globalThis.fetch;
+  const originalSetTimeout = globalThis.setTimeout;
+
+  // Make setTimeout synchronous so background crawl runs instantly
+  globalThis.setTimeout = (fn, _ms, ...args) => { fn(...args); return 0; };
+  globalThis.fetch = async (input) => {
+    const url = String(input);
+    if (url.endsWith("/browser-rendering/crawl")) {
+      return Response.json({ success: true, result: "job-async-crawl-1" });
+    }
+    if (url.includes("/browser-rendering/crawl/job-async-crawl-1")) {
+      return Response.json({
+        success: true,
+        result: {
+          id: "job-async-crawl-1",
+          status: "completed",
+          records: [{
+            url: "https://example.com/async-article",
+            status: "completed",
+            markdown: "# Async Article\n\nBody text.",
+            json: { title: "Async Title", headline: "Headline.", language: "en", summary: "Summary.", topics: ["async"] },
+            metadata: { status: 200 }
+          }]
+        }
+      });
+    }
+    throw new Error(`Unexpected fetch: ${url}`);
+  };
+  t.after(() => { globalThis.fetch = originalFetch; globalThis.setTimeout = originalSetTimeout; });
+
+  const kv = createKeyedKvNamespace();
+  // Capture the background promise via a mock ctx
+  let backgroundPromise = null;
+  const ctx = {
+    waitUntil(p) { backgroundPromise = p; }
+  };
+
+  const crawlEnv = {
+    ...env,
+    ADMIN_API_KEY: "admin-secret",
+    CLOUDFLARE_ACCOUNT_ID: "account-123",
+    CLOUDFLARE_API_TOKEN: "token-123",
+    VISUAL_FEED_CACHE: kv
+  };
+
+  // Submit crawl
+  const submitRes = await worker.fetch(new Request("https://example.com/admin/media/crawl", {
+    method: "POST",
+    headers: { authorization: "Bearer admin-secret", "content-type": "application/json" },
+    body: JSON.stringify({ url: "https://example.com/async-article" })
+  }), crawlEnv, ctx);
+
+  assert.equal(submitRes.status, 200);
+  const submitPayload = await submitRes.json();
+  assert.equal(submitPayload.status, "running");
+  assert.ok(submitPayload.crawlTaskId);
+
+  // Wait for background crawl to finish
+  assert.ok(backgroundPromise, "ctx.waitUntil should have been called");
+  await backgroundPromise;
+
+  // Poll status
+  const statusRes = await worker.fetch(
+    new Request(`https://example.com/admin/media/crawl/${submitPayload.crawlTaskId}`, {
+      headers: { authorization: "Bearer admin-secret" }
+    }),
+    crawlEnv
+  );
+
+  assert.equal(statusRes.status, 200);
+  const statusPayload = await statusRes.json();
+  assert.equal(statusPayload.status, "completed");
+  assert.equal(statusPayload.crawlProvider, "cloudflare");
+  assert.ok(statusPayload.markdown.includes("Async Article"));
+
+  // Use crawlTaskId in /admin/media/prompt
+  const promptRes = await worker.fetch(new Request("https://example.com/admin/media/prompt", {
+    method: "POST",
+    headers: { authorization: "Bearer admin-secret", "content-type": "application/json" },
+    body: JSON.stringify({ crawlTaskId: submitPayload.crawlTaskId })
+  }), crawlEnv);
+
+  assert.equal(promptRes.status, 200);
+  const promptPayload = await promptRes.json();
+  assert.equal(promptPayload.resolvedContent.sourceKind, "crawl");
+  assert.equal(promptPayload.resolvedContent.crawlProvider, "cloudflare");
+  assert.ok(promptPayload.resolvedContent.textPreview.includes("Async Article"));
+});
+
+test("GET /admin/media/crawl/:taskId returns 404 for unknown task", async () => {
+  const kv = createKeyedKvNamespace();
+  const res = await worker.fetch(
+    new Request("https://example.com/admin/media/crawl/nonexistent-id", {
+      headers: { authorization: "Bearer admin-secret" }
+    }),
+    { ...env, ADMIN_API_KEY: "admin-secret", VISUAL_FEED_CACHE: kv }
+  );
+  assert.equal(res.status, 404);
+});
+
+test("POST /admin/media/crawl requires url", async () => {
+  const res = await worker.fetch(new Request("https://example.com/admin/media/crawl", {
+    method: "POST",
+    headers: { authorization: "Bearer admin-secret", "content-type": "application/json" },
+    body: JSON.stringify({})
+  }), { ...env, ADMIN_API_KEY: "admin-secret" });
+
+  assert.equal(res.status, 400);
+  const payload = await res.json();
+  assert.ok(payload.error.includes("url"));
+});
+
+test("resolveAdminTestContent returns 202 when crawl task is still running", async () => {
+  const kv = createKeyedKvNamespace();
+  // Write a "running" task directly to KV
+  kv.store["crawl-task:task-running-1"] = JSON.stringify({ status: "running", url: "https://example.com" });
+
+  const res = await worker.fetch(new Request("https://example.com/admin/media/prompt", {
+    method: "POST",
+    headers: { authorization: "Bearer admin-secret", "content-type": "application/json" },
+    body: JSON.stringify({ crawlTaskId: "task-running-1" })
+  }), { ...env, ADMIN_API_KEY: "admin-secret", VISUAL_FEED_CACHE: kv });
+
+  assert.equal(res.status, 202);
+  const payload = await res.json();
+  assert.ok(payload.details.crawlTaskId);
+  assert.equal(payload.details.status, "running");
+});
+
+test("resolveAdminTestContent returns 422 when crawl task failed", async () => {
+  const kv = createKeyedKvNamespace();
+  kv.store["crawl-task:task-failed-1"] = JSON.stringify({
+    status: "failed",
+    url: "https://example.com",
+    error: "Timeout",
+    crawlProvider: "cloudflare",
+    cfError: "Cloudflare crawl job did not complete within timeout",
+    cfFailureKind: "timeout"
+  });
+
+  const res = await worker.fetch(new Request("https://example.com/admin/media/prompt", {
+    method: "POST",
+    headers: { authorization: "Bearer admin-secret", "content-type": "application/json" },
+    body: JSON.stringify({ crawlTaskId: "task-failed-1" })
+  }), { ...env, ADMIN_API_KEY: "admin-secret", VISUAL_FEED_CACHE: kv });
+
+  assert.equal(res.status, 422);
+  const payload = await res.json();
+  assert.equal(payload.details.cfFailureKind, "timeout");
+  assert.equal(payload.details.crawlProvider, "cloudflare");
 });

@@ -13,4 +13,5 @@ SHAPED_ENGINE_NAME=newsroll_visual_v1
 SHAPED_ITEMS_TABLE=newsroll_items
 SHAPED_INTERACTIONS_TABLE=newsroll_interactions
 ADMIN_API_KEY=replace-me
+FIRECRAWL_API_KEYS=fc-key1,fc-key2
 ENVIRONMENT=development

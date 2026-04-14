@@ -27,30 +27,35 @@ export KEY=my-local-secret
 
 | # | Method | Path | Purpose |
 |---|--------|------|---------|
-| 1 | `POST` | `/admin/media/prompt` | Resolve content + return exact prompt (no image) |
-| 2 | `POST` | `/admin/media/generate` | Generate image + stage preview with `previewId` |
-| 3 | `POST` | `/admin/media/save` | Save a staged preview as a **new** story |
-| 4 | `PUT` | `/admin/media/:storyId` | Apply a staged preview to an **existing** story |
+| 1 | `POST` | `/admin/media/crawl` | Submit async crawl, returns `crawlTaskId` immediately |
+| 2 | `GET` | `/admin/media/crawl/:taskId` | Poll crawl task status and result |
+| 3 | `POST` | `/admin/media/prompt` | Resolve content + return exact prompt (no image) |
+| 4 | `POST` | `/admin/media/generate` | Generate image + stage preview with `previewId` |
+| 5 | `POST` | `/admin/media/save` | Save a staged preview as a **new** story |
+| 6 | `PUT` | `/admin/media/:storyId` | Apply a staged preview to an **existing** story |
 
 Pipeline steps each endpoint covers:
 
 ```
-resolve content → build prompt → generate image → stage preview → persist
-───────────────────────────────
-  /admin/media/prompt    (1→2)
-  /admin/media/generate  (1→2→3→4)
-  /admin/media/save      (5: new story)
-  /admin/media/:storyId  (5: existing story)
+submit crawl → poll → resolve content → build prompt → generate image → stage → persist
+────────────────────
+  /admin/media/crawl         (1: async)
+  /admin/media/crawl/:taskId (2: poll)
+  /admin/media/prompt        (3→4, or uses crawlTaskId)
+  /admin/media/generate      (3→4→5→6, or uses crawlTaskId)
+  /admin/media/save          (7: new story)
+  /admin/media/:storyId      (7: existing story)
 ```
 
 ---
 
-## Shared Parameters (endpoints 1 & 2)
+## Shared Parameters (endpoints 3 & 4)
 
 ### Content source (pick one or combine)
 
 | Field | Type | Description |
 |-------|------|-------------|
+| `crawlTaskId` | string | Use pre-crawled content from an async crawl task (from `POST /admin/media/crawl`). Takes priority over all other content sources. Returns `202` if the task is still running, `422` if it failed, `404` if expired. |
 | `storyId` | number | Use an existing story's cached content from the DB |
 | `url` | string | Live-crawl this URL to get title + article text |
 | `title` | string | Manual title (skip crawling) |
@@ -63,6 +68,7 @@ When `storyId` is provided with `url`, the URL is used as a crawl source if the 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `recrawl` | boolean | `false` | Force re-crawl even if cached content exists for the story. Ignored when no `storyId` is provided. |
+| `forceFirecrawl` | boolean | `false` | Skip Cloudflare crawl entirely and use Firecrawl directly. Useful when CF crawl is known to fail for a specific URL. Requires `FIRECRAWL_API_KEYS` to be configured. |
 
 ### Template (pick one)
 
@@ -103,7 +109,145 @@ When `storyId` is provided with `url`, the URL is used as a crawl source if the 
 
 ---
 
-## 1. `POST /admin/media/prompt`
+## 1. `POST /admin/media/crawl`
+
+Submit an async crawl task. Returns immediately with a `crawlTaskId` while the crawl runs in the background. Use `GET /admin/media/crawl/:taskId` to poll for the result. The completed `crawlTaskId` can then be passed to `/admin/media/prompt` or `/admin/media/generate` to use the pre-crawled content without blocking.
+
+Crawl tasks expire after 1 hour.
+
+### Parameters
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `url` | string | yes | URL to crawl |
+| `storyId` | number | no | Associate the crawl with a story ID |
+| `forceFirecrawl` | boolean | no | Skip Cloudflare and crawl directly with Firecrawl |
+
+### Response
+
+```jsonc
+{
+  "crawlTaskId": "a1b2c3d4-...",
+  "status": "running",
+  "url": "https://example.com/article",
+  "storyId": null,
+  "forceFirecrawl": false
+}
+```
+
+### curl Examples
+
+#### Submit a crawl
+
+```bash
+curl -s "$API/admin/media/crawl" \
+  -H "Authorization: Bearer $KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "url": "https://example.com/article"
+  }' | jq .
+```
+
+#### Submit a crawl with forced Firecrawl
+
+```bash
+curl -s "$API/admin/media/crawl" \
+  -H "Authorization: Bearer $KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "url": "https://example.com/hard-to-crawl",
+    "forceFirecrawl": true
+  }' | jq .
+```
+
+---
+
+## 2. `GET /admin/media/crawl/:taskId`
+
+Poll a crawl task's status. Returns the crawl result when complete.
+
+### Response (running)
+
+```jsonc
+{
+  "crawlTaskId": "a1b2c3d4-...",
+  "status": "running",
+  "url": "https://example.com/article",
+  "storyId": null,
+  "forceFirecrawl": false,
+  "startedAt": "2026-04-14T10:00:00.000Z"
+}
+```
+
+### Response (completed)
+
+```jsonc
+{
+  "crawlTaskId": "a1b2c3d4-...",
+  "status": "completed",
+  "url": "https://example.com/article",
+  "storyId": null,
+  "markdown": "# Article Title\n\nArticle body text...",
+  "metadata": {
+    "title": "Article Title",
+    "headline": "Headline text.",
+    "language": "en",
+    "summary": "Summary text.",
+    "topics": ["tech", "ai"]
+  },
+  "crawlProvider": "cloudflare",   // or "firecrawl"
+  "cfError": null,
+  "cfFailureKind": null,
+  "completedAt": "2026-04-14T10:00:05.000Z"
+}
+```
+
+### Response (failed)
+
+```jsonc
+{
+  "crawlTaskId": "a1b2c3d4-...",
+  "status": "failed",
+  "url": "https://example.com/article",
+  "storyId": null,
+  "error": "Cloudflare crawl job did not complete within timeout",
+  "crawlProvider": "cloudflare",
+  "cfError": "Cloudflare crawl job did not complete within timeout",
+  "cfFailureKind": "timeout",
+  "completedAt": "2026-04-14T10:00:35.000Z"
+}
+```
+
+### curl Examples
+
+#### Poll a crawl task
+
+```bash
+TASK_ID="a1b2c3d4-..."
+curl -s "$API/admin/media/crawl/$TASK_ID" \
+  -H "Authorization: Bearer $KEY" | jq .
+```
+
+#### Poll in a loop until complete
+
+```bash
+TASK_ID="a1b2c3d4-..."
+while true; do
+  STATUS=$(curl -s "$API/admin/media/crawl/$TASK_ID" \
+    -H "Authorization: Bearer $KEY" | jq -r '.status')
+  echo "Status: $STATUS"
+  [ "$STATUS" != "running" ] && break
+  sleep 2
+done
+
+# Get final result
+curl -s "$API/admin/media/crawl/$TASK_ID" \
+  -H "Authorization: Bearer $KEY" | jq .
+```
+
+---
+
+## 3. `POST /admin/media/prompt`
 
 Resolve content and return the exact prompt that would be sent to the image generation provider. No image is generated, no credits spent.
 
@@ -131,7 +275,10 @@ Resolve content and return the exact prompt that would be sent to the image gene
       "language": "en",
       "summary": "...",
       "topics": ["ai", "apple"]
-    }
+    },
+    "crawlProvider": "firecrawl", // "cloudflare", "firecrawl", or null (no crawl)
+    "cfError": "Crawl job timed out after 30000ms",  // null if CF succeeded or wasn't used
+    "cfFailureKind": "timeout"   // null if CF succeeded or wasn't used
   },
   "targetStory": {               // null if no storyId provided
     "storyId": 12345,
@@ -245,9 +392,56 @@ curl -s "$API/admin/media/prompt" \
   }' | jq .
 ```
 
+#### Force Firecrawl (skip Cloudflare crawl entirely)
+
+```bash
+curl -s "$API/admin/media/prompt" \
+  -H "Authorization: Bearer $KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "url": "https://example.com/article",
+    "forceFirecrawl": true
+  }' | jq .
+```
+
+#### Force Firecrawl for an existing story
+
+```bash
+curl -s "$API/admin/media/prompt" \
+  -H "Authorization: Bearer $KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "storyId": 12345,
+    "url": "https://example.com/article",
+    "forceFirecrawl": true
+  }' | jq .
+```
+
+#### Check crawl diagnostics (see which provider was used and why)
+
+```bash
+curl -s "$API/admin/media/prompt" \
+  -H "Authorization: Bearer $KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "url": "https://example.com/article"
+  }' | jq '.resolvedContent | {crawlProvider, cfError, cfFailureKind, sourceKind}'
+```
+
+#### Use a pre-crawled result from async crawl task
+
+```bash
+curl -s "$API/admin/media/prompt" \
+  -H "Authorization: Bearer $KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "crawlTaskId": "a1b2c3d4-..."
+  }' | jq .
+```
+
 ---
 
-## 2. `POST /admin/media/generate`
+## 4. `POST /admin/media/generate`
 
 Resolve content, build prompt, generate image, and stage the result in R2 as a preview. Returns a `previewId` that can be used with `/admin/media/save` or `/admin/media/:storyId` to persist the result.
 
@@ -280,7 +474,10 @@ Resolve content, build prompt, generate image, and stage the result in R2 as a p
     "textPreview": "First 1200 chars...",
     "sourceKind": "cache",
     "sourceUrl": "https://example.com/article",
-    "metadata": { ... }
+    "metadata": { ... },
+    "crawlProvider": "cloudflare", // "cloudflare", "firecrawl", or null
+    "cfError": null,               // CF crawl error message (null if CF succeeded)
+    "cfFailureKind": null          // CF failure classification (null if CF succeeded)
   },
   "targetStory": { ... },        // null if no storyId
   "latencyMs": 2340,             // Image generation time
@@ -313,6 +510,18 @@ curl -s "$API/admin/media/generate" \
   -d '{
     "storyId": 12345,
     "recrawl": true
+  }' | jq .
+```
+
+#### Generate with forced Firecrawl
+
+```bash
+curl -s "$API/admin/media/generate" \
+  -H "Authorization: Bearer $KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "url": "https://example.com/article",
+    "forceFirecrawl": true
   }' | jq .
 ```
 
@@ -456,7 +665,7 @@ curl -s "$API/admin/media/generate" \
 
 ---
 
-## 3. `POST /admin/media/save`
+## 5. `POST /admin/media/save`
 
 Save a previously staged preview as a brand-new story. Creates `feed_entries`, `story_media`, `story_content`, and `published_feed_entries` records. Syncs with Shaped for personalization.
 
@@ -521,7 +730,7 @@ curl -s "$API/admin/media/save" \
 
 ---
 
-## 4. `PUT /admin/media/:storyId`
+## 6. `PUT /admin/media/:storyId`
 
 Apply a previously staged preview to an existing story. Updates `story_media`, `story_content`, `published_feed_entries`, headline, and summary. Refreshes the feed snapshot and syncs with Shaped.
 
@@ -718,17 +927,111 @@ curl -s -X PUT "$API/admin/media/12345" \
   -d "{\"previewId\": \"$FAL_PREVIEW\"}" | jq .
 ```
 
+### Workflow E: Async crawl + generate (avoids timeout)
+
+```bash
+# 1. Submit async crawl (returns immediately)
+TASK_ID=$(curl -s "$API/admin/media/crawl" \
+  -H "Authorization: Bearer $KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"url": "https://example.com/slow-site"}' | jq -r '.crawlTaskId')
+echo "Task: $TASK_ID"
+
+# 2. Poll until complete
+while true; do
+  RESULT=$(curl -s "$API/admin/media/crawl/$TASK_ID" \
+    -H "Authorization: Bearer $KEY")
+  STATUS=$(echo "$RESULT" | jq -r '.status')
+  echo "Status: $STATUS"
+  [ "$STATUS" != "running" ] && break
+  sleep 3
+done
+
+# 3. Check if crawl succeeded
+echo "$RESULT" | jq '{status, crawlProvider, cfError, cfFailureKind}'
+
+# 4. Use the pre-crawled content to generate media (no blocking crawl)
+PREVIEW_ID=$(curl -s "$API/admin/media/generate" \
+  -H "Authorization: Bearer $KEY" \
+  -H "Content-Type: application/json" \
+  -d "{\"crawlTaskId\": \"$TASK_ID\"}" | jq -r '.previewId')
+
+# 5. Save as new story
+curl -s "$API/admin/media/save" \
+  -H "Authorization: Bearer $KEY" \
+  -H "Content-Type: application/json" \
+  -d "{\"previewId\": \"$PREVIEW_ID\", \"category\": \"tech\"}" | jq .
+```
+
+### Workflow F: Debug crawl failures and compare providers
+
+```bash
+# 1. Try default crawl (CF primary, Firecrawl fallback) — check diagnostics
+curl -s "$API/admin/media/prompt" \
+  -H "Authorization: Bearer $KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"url": "https://example.com/hard-to-crawl"}' \
+  | jq '.resolvedContent | {sourceKind, crawlProvider, cfError, cfFailureKind}'
+# → { "crawlProvider": "firecrawl", "cfError": "Crawl job timed out", "cfFailureKind": "timeout" }
+
+# 2. Force Firecrawl directly (skip CF entirely for speed)
+curl -s "$API/admin/media/prompt" \
+  -H "Authorization: Bearer $KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"url": "https://example.com/hard-to-crawl", "forceFirecrawl": true}' \
+  | jq '.resolvedContent | {sourceKind, crawlProvider, cfError, cfFailureKind}'
+# → { "crawlProvider": "firecrawl", "cfError": null, "cfFailureKind": null }
+
+# 3. Generate with Firecrawl for the problematic URL
+PREVIEW_ID=$(curl -s "$API/admin/media/generate" \
+  -H "Authorization: Bearer $KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"url": "https://example.com/hard-to-crawl", "forceFirecrawl": true}' \
+  | jq -r '.previewId')
+
+# 4. Save as new story
+curl -s "$API/admin/media/save" \
+  -H "Authorization: Bearer $KEY" \
+  -H "Content-Type: application/json" \
+  -d "{\"previewId\": \"$PREVIEW_ID\", \"category\": \"tech\"}" | jq .
+```
+
+---
+
+## Crawl Provider Diagnostics
+
+When a URL is crawled, the response includes diagnostics about which provider was used and why:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `crawlProvider` | string\|null | `"cloudflare"` (CF succeeded), `"firecrawl"` (fallback or forced), or `null` (no crawl) |
+| `cfError` | string\|null | Cloudflare crawl error message. Non-null when CF failed and Firecrawl was used as fallback. `null` when CF succeeded, `forceFirecrawl` was used, or no crawl occurred. |
+| `cfFailureKind` | string\|null | CF failure classification. Possible values: `"timeout"`, `"no_content"`, `"http_error"`, `"robots_blocked"`, `"permanent"`, `"config_error"`. `null` when CF succeeded or wasn't used. |
+
+### Fallback behavior
+
+| `cfFailureKind` | Firecrawl fallback? | Reason |
+|-----------------|---------------------|--------|
+| `timeout` | Yes | Different renderer may succeed |
+| `no_content` | Yes | CF got empty page; Firecrawl extracts main content |
+| `http_error` | Yes | Transient error or CF IPs blocked |
+| `robots_blocked` | Yes | CF blocked by robots.txt; Firecrawl uses rotating proxies |
+| `unknown` | Yes | Unclassified failure |
+| `permanent` | No | Page doesn't exist (404) |
+| `config_error` | No | Missing CF credentials — fix configuration |
+
 ---
 
 ## Error Responses
 
 | Status | Meaning |
 |--------|---------|
+| 202 | Crawl task is still running. Poll `GET /admin/media/crawl/:taskId` and retry. Details include `crawlTaskId` and `status: "running"`. |
 | 400 | Invalid JSON, missing required field, or no content provided |
 | 401 | Missing or invalid `ADMIN_API_KEY` |
-| 404 | `templateId` not found, story not found, or preview manifest not found |
+| 404 | `templateId` not found, story not found, preview manifest not found, or crawl task expired |
 | 409 | `storyId` in request body doesn't match the preview manifest |
-| 422 | URL crawl failed (details in `resolvedContent.metadata` or `error`) |
+| 422 | URL crawl failed. Error details include `crawlError`, `crawlProvider`, `cfError`, and `cfFailureKind`. |
 | 503 | `ADMIN_API_KEY` not configured, or `MEDIA_BUCKET` binding missing |
 
 ---

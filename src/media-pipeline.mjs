@@ -30,7 +30,7 @@ import * as shaped from "./shaped.mjs";
 import { readableUrlFor } from "./visual-feed.mjs";
 import { buildFalImageRequest, generateImageWithProvider } from "./media-generation.mjs";
 import { buildPromptInput, clipPromptText, mediaTemplateWithFallback } from "./prompt-config.mjs";
-import { crawlUrl, submitCrawlJob, checkCrawlJobStatus } from "./browser-rendering.mjs";
+import { crawlWithFallback, submitCrawlJobWithTracking, checkCrawlJobWithFallback } from "./crawl-provider.mjs";
 
 export { buildFalImageRequest } from "./media-generation.mjs";
 
@@ -118,7 +118,7 @@ async function enqueueStoryForMedia(env, endpoint, story) {
     let sendOptions = undefined;
 
     if (story.url) {
-      const crawlSubmit = await submitCrawlJob(env, story.url);
+      const crawlSubmit = await submitCrawlJobWithTracking(env, story.url);
       if (crawlSubmit.success) {
         crawlJobId = crawlSubmit.jobId;
         sendOptions = { delaySeconds: 180 };
@@ -203,7 +203,7 @@ export async function processMediaMessage(batch, env, ctx = null) {
     if (message.body?.crawlJobId) {
       const crawlJobId = message.body.crawlJobId;
       const crawlAttempts = message.body.crawlAttempts ?? 0;
-      const crawlCheck = await checkCrawlJobStatus(env, crawlJobId);
+      const crawlCheck = await checkCrawlJobWithFallback(env, crawlJobId, message.body.url, { storyId });
 
       if (crawlCheck.status === "running") {
         if (crawlAttempts >= MAX_CRAWL_WAITS) {
@@ -339,7 +339,7 @@ export async function processMediaMessage(batch, env, ctx = null) {
       // Skip if a crawl job was pre-submitted (result already stored or job failed)
       if (!hasCrawlJob && !crawlMetadata && body.url) {
         log.info({ event: "metadata_crawl_start", storyId, url: body.url });
-        const metaCrawl = await crawlUrl(env, body.url, { storyId });
+        const metaCrawl = await crawlWithFallback(env, body.url, { storyId });
         if (metaCrawl.success && metaCrawl.metadata) {
           crawlMetadata = metaCrawl.metadata;
           log.info({ event: "metadata_crawl_ok", storyId });

@@ -1,5 +1,5 @@
 import { getReadableContent, storeReadableContent } from "./db.mjs";
-import { crawlUrl } from "./browser-rendering.mjs";
+import { crawlWithFallback } from "./crawl-provider.mjs";
 import * as log from "./log.mjs";
 
 function now() {
@@ -15,7 +15,7 @@ export async function resolveArticleUrl(_env, _storyId, { url = null } = {}) {
   return normalizedUrl || null;
 }
 
-export async function resolveArticleContent(env, storyId, { title = "", text = "", url = null } = {}, { allowCrawl = true } = {}) {
+export async function resolveArticleContent(env, storyId, { title = "", text = "", url = null } = {}, { allowCrawl = true, recrawl = false } = {}) {
   const numericStoryId = Number(storyId);
   const hasStoryId = Number.isInteger(numericStoryId) && numericStoryId > 0;
   const normalizedTitle = normalizeText(title);
@@ -24,8 +24,8 @@ export async function resolveArticleContent(env, storyId, { title = "", text = "
 
   log.info({ event: "resolve_article_start", storyId: numericStoryId, hasStoryId, hasText: !!normalizedText, hasUrl: !!normalizedUrl });
 
-  // Step 1: Check cached readable content
-  if (hasStoryId) {
+  // Step 1: Check cached readable content (skip when recrawl is forced)
+  if (hasStoryId && !recrawl) {
     const readableContent = await getReadableContent(env, numericStoryId);
     const cachedText = normalizeText(readableContent?.extractedText);
     if (cachedText) {
@@ -58,7 +58,7 @@ export async function resolveArticleContent(env, storyId, { title = "", text = "
   const resolvedUrl = normalizedUrl;
   if (resolvedUrl && allowCrawl) {
     log.info({ event: "resolve_article_crawl_start", storyId: numericStoryId, url: resolvedUrl });
-    const crawlResult = await crawlUrl(env, resolvedUrl, { storyId: numericStoryId });
+    const crawlResult = await crawlWithFallback(env, resolvedUrl, { storyId: numericStoryId, recrawl });
     const crawledText = normalizeText(crawlResult.markdown);
     if (crawlResult.success && crawledText) {
       if (hasStoryId) {

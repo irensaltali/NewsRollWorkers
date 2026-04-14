@@ -20,7 +20,12 @@ import {
   getPromptTemplateById,
   upsertMedia,
   updatePublishedFeedEntry,
-  updatePublishedFeedEntryMediaProjection
+  updatePublishedFeedEntryMediaProjection,
+  getMaxStoryId,
+  getMaxPublishedVisualFeedSequence,
+  publishReadyStory,
+  storeStory,
+  getStoryContentMetadataByStoryId
 } from "./db.mjs";
 import { error, json, readJson, bearerToken } from "./http.mjs";
 import * as log from "./log.mjs";
@@ -53,7 +58,7 @@ import { getSubscriberInfo, getCreditBalance } from "./revenuecat.mjs";
 import { resolveArticleContent, resolveArticleUrl } from "./article-content.mjs";
 import { promptConfigWithFallback, mediaTemplateWithFallback, buildPromptInput, clipPromptText } from "./prompt-config.mjs";
 import { generateImageWithProvider } from "./media-generation.mjs";
-import { crawlUrl } from "./browser-rendering.mjs";
+import { crawlWithFallback } from "./crawl-provider.mjs";
 import { queryPersonalizedFeed, upsertItem as upsertShapedItem } from "./shaped.mjs";
 
 function now() {
@@ -1080,37 +1085,225 @@ function requireAdminKey(request, env) {
   return null;
 }
 
+// ── Async Crawl Tasks ──────────────────────────────────────────────────────
+
+const CRAWL_TASK_KV_PREFIX = "crawl-task:";
+const CRAWL_TASK_TTL_SECONDS = 3600; // 1 hour
+
+function crawlTaskKvKey(taskId) {
+  return `${CRAWL_TASK_KV_PREFIX}${taskId}`;
+}
+
+async function readCrawlTask(env, taskId) {
+  if (!env.VISUAL_FEED_CACHE?.get) return null;
+  const raw = await env.VISUAL_FEED_CACHE.get(crawlTaskKvKey(taskId));
+  if (!raw) return null;
+  try { return JSON.parse(raw); } catch { return null; }
+}
+
+async function writeCrawlTask(env, taskId, data) {
+  if (!env.VISUAL_FEED_CACHE?.put) return;
+  await env.VISUAL_FEED_CACHE.put(crawlTaskKvKey(taskId), JSON.stringify(data), { expirationTtl: CRAWL_TASK_TTL_SECONDS });
+}
+
+async function runCrawlTask(env, taskId, { url, storyId, forceFirecrawl }) {
+  try {
+    const crawlResult = await crawlWithFallback(env, url, { storyId, recrawl: true, forceFirecrawl });
+    if (crawlResult.success && crawlResult.markdown) {
+      await writeCrawlTask(env, taskId, {
+        status: "completed",
+        url,
+        storyId: storyId ?? null,
+        markdown: crawlResult.markdown,
+        metadata: crawlResult.metadata ?? null,
+        crawlProvider: crawlResult.crawlProvider ?? null,
+        cfError: crawlResult.cfError ?? null,
+        cfFailureKind: crawlResult.cfFailureKind ?? null,
+        completedAt: now()
+      });
+    } else {
+      await writeCrawlTask(env, taskId, {
+        status: "failed",
+        url,
+        storyId: storyId ?? null,
+        error: crawlResult.error ?? "unknown",
+        crawlProvider: crawlResult.crawlProvider ?? null,
+        cfError: crawlResult.cfError ?? null,
+        cfFailureKind: crawlResult.cfFailureKind ?? null,
+        completedAt: now()
+      });
+    }
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    log.error({ event: "crawl_task_error", taskId, url, error: message });
+    await writeCrawlTask(env, taskId, {
+      status: "failed",
+      url,
+      storyId: storyId ?? null,
+      error: message,
+      crawlProvider: null,
+      cfError: null,
+      cfFailureKind: null,
+      completedAt: now()
+    });
+  }
+}
+
+async function handleAdminMediaCrawl(request, env, ctx) {
+  const authErr = requireAdminKey(request, env);
+  if (authErr) return authErr;
+
+  const body = await readJson(request);
+  if (!body) return error("Invalid JSON body", 400);
+
+  const url = normalizeText(body.url);
+  if (!url) return error("url is required", 400);
+
+  const storyId = Number.isInteger(Number(body.storyId)) && Number(body.storyId) > 0
+    ? Number(body.storyId) : null;
+  const forceFirecrawl = body.forceFirecrawl === true;
+
+  const taskId = crypto.randomUUID();
+  await writeCrawlTask(env, taskId, {
+    status: "running",
+    url,
+    storyId,
+    forceFirecrawl,
+    startedAt: now()
+  });
+
+  const crawlPromise = runCrawlTask(env, taskId, { url, storyId, forceFirecrawl });
+  if (ctx?.waitUntil) {
+    ctx.waitUntil(crawlPromise);
+  }
+
+  return json({
+    crawlTaskId: taskId,
+    status: "running",
+    url,
+    storyId,
+    forceFirecrawl
+  });
+}
+
+async function handleAdminMediaCrawlStatus(env, taskId) {
+  const task = await readCrawlTask(env, taskId);
+  if (!task) return error("Crawl task not found or expired", 404);
+  return json({ crawlTaskId: taskId, ...task });
+}
+
 async function resolveAdminTestContent(env, body) {
   let title = "";
   let articleText = "";
   let sourceKind = "provided";
   let crawlMetadata = null;
+  let crawlProvider = null;
+  let cfError = null;
+  let cfFailureKind = null;
   let sourceUrl = normalizeText(body.url);
+  const recrawl = body.recrawl === true;
+  const forceFirecrawl = body.forceFirecrawl === true;
+
+  // ── Use pre-crawled content from async crawl task ──
+  if (body.crawlTaskId) {
+    const task = await readCrawlTask(env, body.crawlTaskId);
+    if (!task) {
+      throw Object.assign(new Error("Crawl task not found or expired"), { status: 404 });
+    }
+    if (task.status === "running") {
+      throw Object.assign(new Error("Crawl task is still running"), { status: 202, details: { crawlTaskId: body.crawlTaskId, status: "running" } });
+    }
+    if (task.status === "failed") {
+      throw Object.assign(new Error("Crawl task failed"), {
+        status: 422,
+        details: { crawlTaskId: body.crawlTaskId, crawlError: task.error ?? "unknown", crawlProvider: task.crawlProvider ?? null, cfError: task.cfError ?? null, cfFailureKind: task.cfFailureKind ?? null }
+      });
+    }
+    // task.status === "completed"
+    articleText = task.markdown ?? "";
+    crawlMetadata = task.metadata ?? null;
+    crawlProvider = task.crawlProvider ?? null;
+    cfError = task.cfError ?? null;
+    cfFailureKind = task.cfFailureKind ?? null;
+    sourceUrl = task.url || sourceUrl || null;
+    sourceKind = "crawl";
+    title = crawlMetadata?.title || body.title || "";
+
+    return {
+      title,
+      articleText,
+      sourceKind,
+      crawlMetadata,
+      crawlProvider,
+      cfError,
+      cfFailureKind,
+      sourceUrl: sourceUrl || null
+    };
+  }
+
+  // Look up story URL from DB when recrawl/forceFirecrawl requested without explicit URL
+  if (body.storyId && !sourceUrl && (recrawl || forceFirecrawl)) {
+    const storyMeta = await getStoryContentMetadataByStoryId(env, Number(body.storyId));
+    sourceUrl = storyMeta?.canonicalUrl || storyMeta?.url || "";
+  }
 
   if (body.storyId) {
-    const resolved = await resolveArticleContent(env, body.storyId, {
-      title: body.title ?? "",
-      text: body.text ?? "",
-      url: sourceUrl || null
-    }, { allowCrawl: false });
-    title = resolved.title || body.title || "";
-    articleText = resolved.text || "";
-    sourceKind = resolved.sourceKind ?? "cache";
-    crawlMetadata = resolved.metadata ?? null;
-
-    if (!articleText && sourceUrl) {
-      const withCrawl = await resolveArticleContent(env, body.storyId, {
+    if ((recrawl || forceFirecrawl) && sourceUrl) {
+      // Force re-crawl or force Firecrawl: bypass cache, go straight to crawl
+      const crawlResult = await crawlWithFallback(env, sourceUrl, { storyId: Number(body.storyId), recrawl: true, forceFirecrawl });
+      crawlProvider = crawlResult.crawlProvider ?? null;
+      cfError = crawlResult.cfError ?? null;
+      cfFailureKind = crawlResult.cfFailureKind ?? null;
+      if (crawlResult.success && crawlResult.markdown) {
+        articleText = crawlResult.markdown;
+        sourceKind = "crawl";
+        crawlMetadata = crawlResult.metadata ?? null;
+        title = crawlMetadata?.title || body.title || "";
+      } else {
+        throw Object.assign(new Error(forceFirecrawl ? "Firecrawl failed" : "Recrawl failed"), {
+          status: 422,
+          details: { crawlError: crawlResult.error ?? "unknown", crawlProvider, cfError, cfFailureKind }
+        });
+      }
+    } else if (recrawl) {
+      // recrawl without URL: resolve with cache bypass
+      const resolved = await resolveArticleContent(env, body.storyId, {
         title: body.title ?? "",
         text: body.text ?? "",
-        url: sourceUrl
-      });
-      title = withCrawl.title || title;
-      articleText = withCrawl.text || "";
-      sourceKind = withCrawl.sourceKind ?? sourceKind;
-      crawlMetadata = withCrawl.metadata ?? crawlMetadata;
+        url: sourceUrl || null
+      }, { allowCrawl: true, recrawl: true });
+      title = resolved.title || body.title || "";
+      articleText = resolved.text || "";
+      sourceKind = resolved.sourceKind ?? "crawl";
+      crawlMetadata = resolved.metadata ?? null;
+    } else {
+      const resolved = await resolveArticleContent(env, body.storyId, {
+        title: body.title ?? "",
+        text: body.text ?? "",
+        url: sourceUrl || null
+      }, { allowCrawl: false });
+      title = resolved.title || body.title || "";
+      articleText = resolved.text || "";
+      sourceKind = resolved.sourceKind ?? "cache";
+      crawlMetadata = resolved.metadata ?? null;
+
+      if (!articleText && sourceUrl) {
+        const withCrawl = await resolveArticleContent(env, body.storyId, {
+          title: body.title ?? "",
+          text: body.text ?? "",
+          url: sourceUrl
+        });
+        title = withCrawl.title || title;
+        articleText = withCrawl.text || "";
+        sourceKind = withCrawl.sourceKind ?? sourceKind;
+        crawlMetadata = withCrawl.metadata ?? crawlMetadata;
+      }
     }
   } else if (sourceUrl) {
-    const crawlResult = await crawlUrl(env, sourceUrl);
+    const crawlResult = await crawlWithFallback(env, sourceUrl, { recrawl, forceFirecrawl });
+    crawlProvider = crawlResult.crawlProvider ?? null;
+    cfError = crawlResult.cfError ?? null;
+    cfFailureKind = crawlResult.cfFailureKind ?? null;
     if (crawlResult.success && crawlResult.markdown) {
       articleText = crawlResult.markdown;
       sourceKind = "crawl";
@@ -1119,7 +1312,7 @@ async function resolveAdminTestContent(env, body) {
     } else {
       throw Object.assign(new Error("Crawl failed"), {
         status: 422,
-        details: { crawlError: crawlResult.error ?? "unknown" }
+        details: { crawlError: crawlResult.error ?? "unknown", crawlProvider, cfError, cfFailureKind }
       });
     }
   } else {
@@ -1139,6 +1332,9 @@ async function resolveAdminTestContent(env, body) {
     articleText,
     sourceKind,
     crawlMetadata,
+    crawlProvider,
+    cfError,
+    cfFailureKind,
     sourceUrl: sourceUrl || null
   };
 }
@@ -1375,7 +1571,10 @@ async function handleAdminTestPrompt(request, env) {
           textPreview: clipAdminPreviewText(resolvedContent.articleText),
           sourceKind: resolvedContent.sourceKind,
           sourceUrl: resolvedContent.sourceUrl,
-          metadata: resolvedContent.crawlMetadata
+          metadata: resolvedContent.crawlMetadata,
+          crawlProvider: resolvedContent.crawlProvider ?? null,
+        cfError: resolvedContent.cfError ?? null,
+        cfFailureKind: resolvedContent.cfFailureKind ?? null
         },
         targetStory: existingEntry,
         latencyMs: 0,
@@ -1499,7 +1698,10 @@ async function handleAdminTestPrompt(request, env) {
         textPreview: clipAdminPreviewText(resolvedContent.articleText),
         sourceKind: resolvedContent.sourceKind,
         sourceUrl: resolvedContent.sourceUrl,
-        metadata: resolvedContent.crawlMetadata
+        metadata: resolvedContent.crawlMetadata,
+        crawlProvider: resolvedContent.crawlProvider ?? null,
+        cfError: resolvedContent.cfError ?? null,
+        cfFailureKind: resolvedContent.cfFailureKind ?? null
       },
       targetStory: existingEntry,
       latencyMs,
@@ -1520,6 +1722,476 @@ async function handleAdminTestPrompt(request, env) {
   }
 }
 
+// ── Admin Media API (granular endpoints) ────────────────────────────────────
+
+async function handleAdminMediaPrompt(request, env) {
+  const authErr = requireAdminKey(request, env);
+  if (authErr) return authErr;
+
+  const body = await readJson(request);
+  if (!body) return error("Invalid JSON body", 400);
+
+  const start = Date.now();
+  try {
+    const storyId = Number.isInteger(Number(body.storyId)) && Number(body.storyId) > 0
+      ? Number(body.storyId) : null;
+    const existingEntry = storyId
+      ? (await getPublishedFeedEntriesByStoryIds(env, [storyId]))[0] ?? null : null;
+    const resolvedContent = await resolveAdminTestContent(env, body);
+    const template = await resolveAdminTestTemplate(env, body);
+    const resolvedPrompt = buildPromptInput(template.templateText, {
+      title: resolvedContent.title,
+      sourceText: clipPromptText(resolvedContent.articleText, 1200)
+    });
+
+    return json({
+      status: "resolved",
+      resolvedPrompt,
+      templateUsed: { id: template.id, name: template.name, templateText: template.templateText },
+      settings: template.settings,
+      resolvedContent: {
+        title: resolvedContent.title,
+        textLength: resolvedContent.articleText.length,
+        textPreview: clipAdminPreviewText(resolvedContent.articleText),
+        sourceKind: resolvedContent.sourceKind,
+        sourceUrl: resolvedContent.sourceUrl,
+        metadata: resolvedContent.crawlMetadata,
+        crawlProvider: resolvedContent.crawlProvider ?? null,
+        cfError: resolvedContent.cfError ?? null,
+        cfFailureKind: resolvedContent.cfFailureKind ?? null
+      },
+      targetStory: existingEntry,
+      totalMs: Date.now() - start
+    });
+  } catch (err) {
+    return error(err instanceof Error ? err.message : "Admin media prompt failed", err?.status ?? 500, err?.details);
+  }
+}
+
+async function handleAdminMediaGenerate(request, env) {
+  const authErr = requireAdminKey(request, env);
+  if (authErr) return authErr;
+
+  const body = await readJson(request);
+  if (!body) return error("Invalid JSON body", 400);
+
+  const start = Date.now();
+  try {
+    const storyId = Number.isInteger(Number(body.storyId)) && Number(body.storyId) > 0
+      ? Number(body.storyId) : null;
+    const existingEntry = storyId
+      ? (await getPublishedFeedEntriesByStoryIds(env, [storyId]))[0] ?? null : null;
+    const resolvedContent = await resolveAdminTestContent(env, body);
+    const template = await resolveAdminTestTemplate(env, body);
+    const resolvedPrompt = buildPromptInput(template.templateText, {
+      title: resolvedContent.title,
+      sourceText: clipPromptText(resolvedContent.articleText, 1200)
+    });
+
+    const genStart = Date.now();
+    const result = await generateImageWithProvider(env, {
+      provider: template.provider,
+      model: template.model,
+      settings: template.settings,
+      prompt: resolvedPrompt,
+      storyId
+    });
+    const latencyMs = Date.now() - genStart;
+
+    let previewId = null;
+    let previewAssetUrl = null;
+    if (result.status === "ready" && result.url) {
+      const staged = await writeAdminTestAsset(env, {
+        storyId,
+        sourceEndpoint: existingEntry?.sourceEndpoint ?? null,
+        sourceUrl: resolvedContent.sourceUrl,
+        title: resolvedContent.title,
+        articleText: resolvedContent.articleText,
+        sourceKind: resolvedContent.sourceKind,
+        crawlMetadata: resolvedContent.crawlMetadata,
+        resolvedPrompt,
+        templateUsed: { id: template.id, name: template.name, templateText: template.templateText },
+        settings: template.settings,
+        provider: result.provider ?? template.provider,
+        model: result.model ?? template.model,
+        latencyMs,
+        billableUnits: result.billableUnits ?? null,
+        assetUrl: result.url
+      });
+      previewId = staged?.manifestKey ?? null;
+      previewAssetUrl = staged?.assetUrl ?? null;
+    }
+
+    let promptRunEventId = null;
+    if (body.logPromptRun !== false) {
+      try {
+        const eventResult = await createPromptRunEvent(env, {
+          source: "admin_media_generate",
+          promptKind: "media",
+          promptKey: template.name ?? "adhoc",
+          promptTemplateId: template.id ?? null,
+          provider: result.provider ?? template.provider ?? "fal",
+          model: result.model ?? template.model ?? null,
+          modality: "image",
+          status: result.status === "ready" ? "ready" : "failed",
+          latencyMs,
+          requestExcerpt: resolvedPrompt.slice(0, 500),
+          responseExcerpt: result.url ?? null,
+          artifactUrl: previewAssetUrl ?? result.url ?? null,
+          errorText: result.errorText ?? null,
+          storyId
+        });
+        promptRunEventId = eventResult?.id ?? null;
+      } catch (err) {
+        log.warn({ event: "admin_media_generate_log_fail", ...log.fmtError(err) });
+      }
+    }
+
+    return json({
+      status: result.status,
+      imageUrl: result.url ?? null,
+      previewId,
+      previewAssetUrl,
+      provider: result.provider ?? template.provider,
+      model: result.model ?? template.model,
+      resolvedPrompt,
+      templateUsed: { id: template.id, name: template.name, templateText: template.templateText },
+      settings: template.settings,
+      resolvedContent: {
+        title: resolvedContent.title,
+        textLength: resolvedContent.articleText.length,
+        textPreview: clipAdminPreviewText(resolvedContent.articleText),
+        sourceKind: resolvedContent.sourceKind,
+        sourceUrl: resolvedContent.sourceUrl,
+        metadata: resolvedContent.crawlMetadata,
+        crawlProvider: resolvedContent.crawlProvider ?? null,
+        cfError: resolvedContent.cfError ?? null,
+        cfFailureKind: resolvedContent.cfFailureKind ?? null
+      },
+      targetStory: existingEntry,
+      latencyMs,
+      totalMs: Date.now() - start,
+      error: result.errorText ?? null,
+      promptRunEventId,
+      billableUnits: result.billableUnits ?? null
+    });
+  } catch (err) {
+    return error(err instanceof Error ? err.message : "Admin media generate failed", err?.status ?? 500, err?.details);
+  }
+}
+
+async function handleAdminMediaSave(request, env) {
+  const authErr = requireAdminKey(request, env);
+  if (authErr) return authErr;
+
+  const body = await readJson(request);
+  if (!body) return error("Invalid JSON body", 400);
+
+  const previewId = normalizeText(body.previewId);
+  if (!previewId) return error("previewId is required", 400);
+
+  try {
+    const manifest = await readAdminTestManifest(env, previewId);
+
+    if (!env.MEDIA_BUCKET?.get || !env.MEDIA_BUCKET?.put) {
+      return error("MEDIA_BUCKET binding is required", 503);
+    }
+
+    const assetObject = await env.MEDIA_BUCKET.get(manifest.assetKey);
+    if (!assetObject) return error("Preview asset not found", 404);
+
+    const [maxStoryId, maxSequence] = await Promise.all([
+      getMaxStoryId(env),
+      getMaxPublishedVisualFeedSequence(env)
+    ]);
+    const storyId = maxStoryId + 1;
+    const publishSequence = maxSequence + 1;
+    const category = normalizeText(body.category) || normalizeText(manifest.sourceEndpoint) || "general";
+    const updatedAt = now();
+
+    const articleText = typeof manifest.articleText === "string" ? manifest.articleText : "";
+    const fallbackText = `${manifest.title ?? ""} ${manifest.sourceUrl ?? ""}`.trim() || "News story";
+    const contentHash = await sha256Hex(articleText || fallbackText);
+    const extension = mediaExtensionFromContentType(manifest.assetContentType, "webp");
+    const mediaKey = `stories/${storyId}-${contentHash}.${extension}`;
+    const mediaBytes = new Uint8Array(await assetObject.arrayBuffer());
+    await env.MEDIA_BUCKET.put(mediaKey, mediaBytes, {
+      httpMetadata: { contentType: manifest.assetContentType ?? "image/webp" }
+    });
+
+    const mediaUrl = publicMediaUrlFor(env, mediaKey);
+    const crawlMetadata = manifest.crawlMetadata && typeof manifest.crawlMetadata === "object"
+      ? manifest.crawlMetadata : null;
+    const headline = crawlMetadata?.headline || manifest.title || null;
+    const summary = crawlMetadata?.summary ?? null;
+    const topics = Array.isArray(crawlMetadata?.topics) ? crawlMetadata.topics : null;
+    const sourceUrl = normalizeText(manifest.sourceUrl) || null;
+    const sourceKind = normalizeText(manifest.sourceKind) || null;
+
+    await storeStory(env, storyId, category, 0);
+
+    if (articleText) {
+      await storeReadableContent(env, {
+        storyId,
+        sourceKind: sourceKind ?? "provided",
+        extractedText: articleText,
+        sourceUrl,
+        updatedAt
+      });
+    }
+
+    if (headline) {
+      await storeHeadline(env, storyId, headline);
+    }
+
+    if (summary || topics) {
+      await storeStorySummary(env, {
+        storyId,
+        sourceUrl,
+        summary,
+        topics,
+        updatedAt
+      });
+    }
+
+    await upsertMedia(env, {
+      storyId,
+      status: "ready",
+      falRequestId: `admin_save:${manifest.runId ?? crypto.randomUUID()}`,
+      mediaKey,
+      mediaUrl,
+      failureReason: null,
+      attempts: 1,
+      updatedAt,
+      promptTemplateId: manifest.templateUsed?.id ?? null,
+      imagePrompt: manifest.resolvedPrompt ?? null,
+      mediaType: "image",
+      provider: manifest.provider ?? null,
+      model: manifest.model ?? null,
+      generationLatencyMs: Number.isFinite(manifest.latencyMs) ? manifest.latencyMs : null
+    });
+
+    await publishReadyStory(env, {
+      storyId,
+      publishSequence,
+      sourceEndpoint: category,
+      publishedAt: updatedAt,
+      mediaUrl,
+      mediaStatus: "ready",
+      headline
+    });
+
+    const publishedEntry = {
+      storyId,
+      publishSequence,
+      sourceEndpoint: category,
+      publishedAt: updatedAt,
+      mediaUrl,
+      mediaStatus: "ready",
+      headline
+    };
+
+    await refreshPublishedFeedSnapshot(env, publishedEntry);
+
+    await upsertShapedItem(env, {
+      storyId,
+      headline,
+      title: manifest.title ?? "",
+      summary,
+      category,
+      topics,
+      publishedAt: updatedAt,
+      mediaUrl,
+      mediaType: "image",
+      mediaProvider: manifest.provider ?? null,
+      mediaModel: manifest.model ?? null,
+      promptTemplateId: manifest.templateUsed?.id ?? null
+    });
+
+    return json({
+      ok: true,
+      storyId,
+      saved: true,
+      previewId,
+      mediaKey,
+      mediaUrl,
+      publishedEntry,
+      contentUpdated: {
+        readableContent: Boolean(articleText),
+        headline: Boolean(headline),
+        summary: Boolean(summary),
+        topics: Array.isArray(topics) ? topics.length : 0
+      }
+    });
+  } catch (err) {
+    return error(err instanceof Error ? err.message : "Admin media save failed", err?.status ?? 500, err?.details);
+  }
+}
+
+async function handleAdminMediaApply(request, env, pathStoryId) {
+  const authErr = requireAdminKey(request, env);
+  if (authErr) return authErr;
+
+  const body = await readJson(request);
+  if (!body) return error("Invalid JSON body", 400);
+
+  const previewId = normalizeText(body.previewId);
+  if (!previewId) return error("previewId is required", 400);
+
+  const storyId = Number(pathStoryId);
+  if (!Number.isInteger(storyId) || storyId <= 0) {
+    return error("Invalid storyId in path", 400);
+  }
+
+  try {
+    const manifest = await readAdminTestManifest(env, previewId);
+
+    if (manifest.storyId != null && Number(manifest.storyId) !== storyId) {
+      return error("storyId does not match the preview manifest", 409);
+    }
+
+    const existingEntry = (await getPublishedFeedEntriesByStoryIds(env, [storyId]))[0] ?? null;
+    if (!existingEntry) {
+      return error("Published feed item not found for storyId", 404);
+    }
+
+    if (!env.MEDIA_BUCKET?.get || !env.MEDIA_BUCKET?.put) {
+      return error("MEDIA_BUCKET binding is required", 503);
+    }
+
+    const assetObject = await env.MEDIA_BUCKET.get(manifest.assetKey);
+    if (!assetObject) return error("Preview asset not found", 404);
+
+    const articleText = typeof manifest.articleText === "string" ? manifest.articleText : "";
+    const fallbackText = `${manifest.title ?? ""} ${manifest.sourceUrl ?? ""}`.trim() || "News story";
+    const contentHash = await sha256Hex(articleText || fallbackText);
+    const extension = mediaExtensionFromContentType(manifest.assetContentType, "webp");
+    const mediaKey = `stories/${storyId}-${contentHash}.${extension}`;
+    const mediaBytes = new Uint8Array(await assetObject.arrayBuffer());
+    await env.MEDIA_BUCKET.put(mediaKey, mediaBytes, {
+      httpMetadata: { contentType: manifest.assetContentType ?? "image/webp" }
+    });
+
+    const mediaUrl = publicMediaUrlFor(env, mediaKey);
+    const updatedAt = now();
+    const crawlMetadata = manifest.crawlMetadata && typeof manifest.crawlMetadata === "object"
+      ? manifest.crawlMetadata : null;
+    const headline = crawlMetadata?.headline ?? existingEntry.headline ?? null;
+    const summary = crawlMetadata?.summary ?? null;
+    const topics = Array.isArray(crawlMetadata?.topics) ? crawlMetadata.topics : null;
+    const sourceUrl = normalizeText(manifest.sourceUrl) || null;
+    const sourceKind = normalizeText(manifest.sourceKind) || null;
+
+    if (articleText) {
+      await storeReadableContent(env, {
+        storyId,
+        sourceKind: sourceKind ?? "provided",
+        extractedText: articleText,
+        sourceUrl,
+        updatedAt
+      });
+    }
+
+    if (headline) {
+      await storeHeadline(env, storyId, headline);
+    }
+
+    if (summary || topics) {
+      await storeStorySummary(env, {
+        storyId,
+        sourceUrl,
+        summary,
+        topics,
+        updatedAt
+      });
+    }
+
+    await upsertMedia(env, {
+      storyId,
+      status: "ready",
+      falRequestId: `admin_apply:${manifest.runId ?? crypto.randomUUID()}`,
+      mediaKey,
+      mediaUrl,
+      failureReason: null,
+      attempts: 1,
+      updatedAt,
+      promptTemplateId: manifest.templateUsed?.id ?? null,
+      imagePrompt: manifest.resolvedPrompt ?? null,
+      mediaType: "image",
+      provider: manifest.provider ?? null,
+      model: manifest.model ?? null,
+      generationLatencyMs: Number.isFinite(manifest.latencyMs) ? manifest.latencyMs : null
+    });
+
+    await updatePublishedFeedEntry(env, storyId, {
+      mediaUrl,
+      mediaStatus: "ready",
+      headline
+    });
+
+    await updatePublishedFeedEntryMediaProjection(env, storyId, {
+      mediaType: "image",
+      mediaProvider: manifest.provider ?? null,
+      mediaModel: manifest.model ?? null,
+      generationStatus: "ready",
+      generationLatencyMs: Number.isFinite(manifest.latencyMs) ? manifest.latencyMs : null,
+      generationCostUsd: null,
+      promptTemplateId: manifest.templateUsed?.id ?? null,
+      promptTemplateName: manifest.templateUsed?.name ?? null
+    });
+
+    const updatedEntry = {
+      ...existingEntry,
+      mediaUrl,
+      mediaStatus: "ready",
+      headline
+    };
+
+    await refreshPublishedFeedSnapshot(env, updatedEntry);
+
+    const shapedResult = await upsertShapedItem(env, {
+      storyId,
+      headline,
+      title: manifest.title ?? "",
+      summary,
+      category: existingEntry.sourceEndpoint,
+      topics,
+      publishedAt: existingEntry.publishedAt,
+      mediaUrl,
+      mediaType: "image",
+      mediaProvider: manifest.provider ?? null,
+      mediaModel: manifest.model ?? null,
+      promptTemplateId: manifest.templateUsed?.id ?? null
+    });
+
+    return json({
+      ok: true,
+      storyId,
+      applied: true,
+      previewId,
+      mediaKey,
+      mediaUrl,
+      publishedEntry: {
+        storyId,
+        publishSequence: existingEntry.publishSequence,
+        publishedAt: existingEntry.publishedAt,
+        sourceEndpoint: existingEntry.sourceEndpoint,
+        mediaStatus: "ready",
+        headline
+      },
+      contentUpdated: {
+        readableContent: Boolean(articleText),
+        headline: Boolean(headline),
+        summary: Boolean(summary),
+        topics: Array.isArray(topics) ? topics.length : 0
+      },
+      shaped: shapedResult
+    });
+  } catch (err) {
+    return error(err instanceof Error ? err.message : "Admin media apply failed", err?.status ?? 500, err?.details);
+  }
+}
+
 const ROUTES = [
   { method: "GET",   path: "/health",               name: "health",           handler: (r, e) => json({ ok: true, service: e.APP_NAME ?? "NewsRoll Backend", environment: e.ENVIRONMENT ?? "unknown" }) },
   { method: "GET",   path: "/v1/config",             name: "config",           handler: handleConfig },
@@ -1530,6 +2202,10 @@ const ROUTES = [
   { method: "POST",  path: "/v1/ai/explain",           name: "ai_explain",      handler: handleAIExplain },
   { method: "GET",   path: "/v1/credits",              name: "credits",         handler: handleGetCredits },
   { method: "POST",  path: "/admin/test-prompt",       name: "admin_test_prompt", handler: handleAdminTestPrompt },
+  { method: "POST",  path: "/admin/media/prompt",      name: "admin_media_prompt",   handler: handleAdminMediaPrompt },
+  { method: "POST",  path: "/admin/media/generate",    name: "admin_media_generate", handler: handleAdminMediaGenerate },
+  { method: "POST",  path: "/admin/media/save",        name: "admin_media_save",     handler: handleAdminMediaSave },
+  { method: "POST",  path: "/admin/media/crawl",       name: "admin_media_crawl",    handler: handleAdminMediaCrawl },
 ];
 
 async function routeRequest(request, env, ctx) {
@@ -1551,6 +2227,20 @@ async function routeRequest(request, env, ctx) {
   if (request.method === "GET" && segments[0] === "v1" && segments[1] === "stories" && segments[2] && segments[3] === "article") {
     const response = await handleReadableArticle(env, segments[2]);
     return { response, route: "readable_article" };
+  }
+
+  // GET /admin/media/crawl/:taskId
+  if (request.method === "GET" && segments[0] === "admin" && segments[1] === "media" && segments[2] === "crawl" && segments[3]) {
+    const authErr = requireAdminKey(request, env);
+    if (authErr) return { response: authErr, route: "admin_media_crawl_status" };
+    const response = await handleAdminMediaCrawlStatus(env, segments[3]);
+    return { response, route: "admin_media_crawl_status" };
+  }
+
+  // PUT /admin/media/:storyId
+  if (request.method === "PUT" && segments[0] === "admin" && segments[1] === "media" && segments[2]) {
+    const response = await handleAdminMediaApply(request, env, segments[2]);
+    return { response, route: "admin_media_apply" };
   }
 
   return { response: error("Route not found", 404), route: null };
