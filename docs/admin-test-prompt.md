@@ -4,9 +4,9 @@ Admin media testing now uses the same OpenAI prompt-optimizer flow as the produc
 
 `article metadata -> OpenAI optimizer -> optimized image prompt -> Flux/image model -> staged asset -> save/apply`
 
-Image templates are no longer supported. Prompt-optimizer system and user prompts are stored in Supabase and selected by `optimizerKey` and optional `optimizerVersion`.
+Image templates are no longer supported. Prompt-optimizer system and user prompts are stored in Supabase in `image_prompt_optimizer_configs`.
 
-The production media pipeline now picks a random active optimizer config from `image_prompt_optimizer_configs` for each run unless you explicitly target a config in admin requests.
+The production media pipeline now routes stories to active prompt variants by topic and keyword match, with fallback to the configured default variant. Admin endpoints use the same routing unless you explicitly target a config.
 
 ## Authentication
 
@@ -49,8 +49,8 @@ Pick one or combine:
 
 | Field | Type | Notes |
 | --- | --- | --- |
-| `optimizerConfigId` | number | Optional. Use this exact `image_prompt_optimizer_configs.id` when you want a specific optimizer |
-| `optimizerKey` | string | Optional legacy selector. When omitted and `optimizerConfigId` is not provided, admin endpoints pick a random active optimizer |
+| `optimizerConfigId` | number | Optional. Use this exact `image_prompt_optimizer_configs.id` when you want a specific prompt variant |
+| `optimizerKey` | string | Optional selector. Usually `news_image_prompt_optimizer` |
 | `optimizerVersion` | string | Optional legacy selector paired with `optimizerKey` |
 | `logPromptRun` | boolean | Defaults to `true` |
 
@@ -66,7 +66,7 @@ Only used by `/admin/media/generate` and `POST /admin/test-prompt` when `generat
 
 | Field | Type | Notes |
 | --- | --- | --- |
-| `provider` | string | Defaults to `fal` |
+| `provider` | string | Optional override. When omitted, admin endpoints use the selected optimizer config's `generationProvider` |
 | `model` | string | Optional image model override |
 | `settings` | object | Optional image-generation settings override |
 
@@ -123,7 +123,9 @@ Default selection behavior:
 
 - If `optimizerConfigId` is provided, that exact config is used.
 - Otherwise, if `optimizerKey` or `optimizerVersion` is provided, the matching config is used.
-- Otherwise, a random active optimizer config is selected.
+- Otherwise, active prompt variants are topic-routed with fallback:
+  - topic/keyword match wins first
+  - if nothing matches, the active fallback variant is used
 
 Example:
 
@@ -146,8 +148,15 @@ Response shape:
   "optimizerUsed": {
     "id": 1,
     "key": "news_image_prompt_optimizer",
-    "version": "doc_v1",
-    "name": "News Image Prompt Optimizer"
+    "version": "v1.1-c",
+    "name": "News Image Prompt Optimizer - Photojournalistic Realism",
+    "optimizerProvider": "openai",
+    "optimizerModel": "gpt-5.4-mini-2026-03-17",
+    "generationProvider": "fal",
+    "generationModel": "fal-ai/flux-2/turbo",
+    "matchedTopics": ["politics"],
+    "matchedKeywords": ["vote"],
+    "fallbackReason": null
   },
   "optimizerInput": {
     "title": "Article title",
@@ -208,8 +217,15 @@ Response shape:
   "optimizerUsed": {
     "id": 1,
     "key": "news_image_prompt_optimizer",
-    "version": "doc_v1",
-    "name": "News Image Prompt Optimizer"
+    "version": "v1.1-a",
+    "name": "News Image Prompt Optimizer - Production Generalist",
+    "optimizerProvider": "openai",
+    "optimizerModel": "gpt-5.4-mini-2026-03-17",
+    "generationProvider": "fal",
+    "generationModel": "fal-ai/flux-2/turbo",
+    "matchedTopics": [],
+    "matchedKeywords": [],
+    "fallbackReason": "no_topic_match"
   },
   "optimizerInput": {
     "title": "Article title",
@@ -331,6 +347,15 @@ The response includes all fields from `/admin/media/generate` plus:
 
 - `prompt_templates`, `templateId`, and `templateText` are removed from the admin workflow.
 - Prompt optimizer configs live in Supabase table `image_prompt_optimizer_configs`.
+- The table now carries both optimizer and image-generation defaults:
+  - `optimizer_provider`, `optimizer_model`
+  - `generation_provider`, `generation_model`
+- Topic routing metadata also lives on the config rows:
+  - `topic_matchers`, `keyword_matchers`, `routing_priority`, `fallback`
+- Seeded prompt variants are:
+  - `v1.1-a`: Production Generalist
+  - `v1.1-b`: Editorial Metaphor
+  - `v1.1-c`: Photojournalistic Realism
 - Saved optimized prompts live in Supabase table `image_prompt_generations`.
 - `story_media.image_prompt` keeps the latest selected prompt mirror for the story.
 - Shaped payload structure is unchanged.

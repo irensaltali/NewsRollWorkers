@@ -6,7 +6,7 @@ import {
   createImagePromptGeneration,
   upsertMedia,
   updatePublishedFeedEntryMediaProjection,
-  getImagePromptOptimizerConfig,
+  resolveImagePromptOptimizerConfig,
   reserveMediaQueueSlot,
   releaseMediaQueueSlot,
   getRSSSourceIdByStoryId,
@@ -439,17 +439,19 @@ export async function processMediaMessage(batch, env, ctx = null) {
         }
       }
 
-      const optimizerConfig = await getImagePromptOptimizerConfig(env, {
-        randomActive: true,
-        key: null
-      });
       const optimizerInput = resolveOptimizerInput({
         title,
         headline,
         summary,
         topics,
-        language
+        language,
+        markdown: extractedText
       });
+      const optimizerSelection = await resolveImagePromptOptimizerConfig(env, {
+        key: null,
+        input: optimizerInput
+      });
+      const optimizerConfig = optimizerSelection.config;
       const optimization = await generateOptimizedImagePrompt(env, optimizerInput, {
         config: optimizerConfig,
         storyId
@@ -460,8 +462,8 @@ export async function processMediaMessage(batch, env, ctx = null) {
         optimizerConfigId: optimizerConfig.id ?? null,
         optimizerKey: optimizerConfig.key,
         optimizerVersion: optimizerConfig.version,
-        optimizerProvider: optimization.provider ?? optimizerConfig.provider,
-        optimizerModel: optimization.model ?? optimizerConfig.model,
+        optimizerProvider: optimization.provider ?? optimizerConfig.optimizerProvider,
+        optimizerModel: optimization.model ?? optimizerConfig.optimizerModel,
         optimizerInput,
         optimizedPrompt: optimization.optimizedPrompt,
         status: optimization.status,
@@ -474,8 +476,8 @@ export async function processMediaMessage(batch, env, ctx = null) {
         promptKey: optimizerConfig.key,
         promptVersion: optimizerConfig.version,
         optimizerConfigId: optimizerConfig.id ?? null,
-        provider: optimization.provider ?? optimizerConfig.provider,
-        model: optimization.model ?? optimizerConfig.model,
+        provider: optimization.provider ?? optimizerConfig.optimizerProvider,
+        model: optimization.model ?? optimizerConfig.optimizerModel,
         modality: "text",
         status: optimization.status,
         latencyMs: optimization.latencyMs ?? null,
@@ -515,8 +517,8 @@ export async function processMediaMessage(batch, env, ctx = null) {
       }
 
       const result = await generateImageWithProvider(env, {
-        provider: "fal",
-        model: null,
+        provider: optimizerConfig.generationProvider ?? "fal",
+        model: optimizerConfig.generationModel ?? null,
         settings: null,
         prompt: imagePrompt,
         storyId
@@ -648,6 +650,9 @@ export async function processMediaMessage(batch, env, ctx = null) {
         sourceKind,
         optimizerKey: optimizerConfig.key,
         optimizerVersion: optimizerConfig.version,
+        matchedTopics: optimizerSelection.matchedTopics,
+        matchedKeywords: optimizerSelection.matchedKeywords,
+        fallbackReason: optimizerSelection.fallbackReason,
         durationMs: Date.now() - msgStart
       });
       message.ack();

@@ -5,6 +5,7 @@ import {
   clearRSSItemCrawlFailure,
   getImagePromptOptimizerConfig,
   markRSSItemCrawlFailure,
+  resolveImagePromptOptimizerConfig,
   storeReadableContent,
   storeStoryExplanation,
   storeStorySummary
@@ -318,5 +319,86 @@ test("getImagePromptOptimizerConfig can choose a random active config", async ()
   } finally {
     globalThis.fetch = originalFetch;
     Math.random = originalRandom;
+  }
+});
+
+test("resolveImagePromptOptimizerConfig chooses a topic-matched config and exposes routing metadata", async () => {
+  const env = {
+    SUPABASE_URL: "https://example.supabase.co",
+    SUPABASE_SECRET_KEY: "service-role-test"
+  };
+
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (input) => {
+    const url = typeof input === "string" ? input : input.url;
+    if (url.includes("/rest/v1/image_prompt_optimizer_configs")) {
+      return new Response(JSON.stringify([
+        {
+          id: 11,
+          key: "news_image_prompt_optimizer",
+          version: "v1.1-a",
+          name: "Variant A",
+          optimizer_provider: "openai",
+          optimizer_model: "gpt-5.4-mini-2026-03-17",
+          generation_provider: "fal",
+          generation_model: "fal-ai/flux-2/turbo",
+          max_completion_tokens: 500,
+          system_prompt: "system-a",
+          user_prompt_template: "template-a",
+          topic_matchers: ["technology"],
+          keyword_matchers: [],
+          routing_priority: 100,
+          fallback: true,
+          settings: {},
+          active: true
+        },
+        {
+          id: 12,
+          key: "news_image_prompt_optimizer",
+          version: "v1.1-c",
+          name: "Variant C",
+          optimizer_provider: "openai",
+          optimizer_model: "gpt-5.4-mini-2026-03-17",
+          generation_provider: "openai",
+          generation_model: "gpt-image-1",
+          max_completion_tokens: 500,
+          system_prompt: "system-c",
+          user_prompt_template: "template-c",
+          topic_matchers: ["politics"],
+          keyword_matchers: ["vote"],
+          routing_priority: 10,
+          fallback: false,
+          settings: {},
+          active: true
+        }
+      ]), {
+        status: 200,
+        headers: { "content-type": "application/json" }
+      });
+    }
+
+    throw new Error(`Unexpected fetch: ${url}`);
+  };
+
+  try {
+    const selection = await resolveImagePromptOptimizerConfig(env, {
+      key: null,
+      input: {
+        title: "Transit vote today",
+        headline: "City politics dominate the race",
+        summary: "A close vote will decide the policy path.",
+        topics: ["politics"],
+        language: "en"
+      }
+    });
+
+    assert.equal(selection.config.id, 12);
+    assert.equal(selection.config.generationProvider, "openai");
+    assert.equal(selection.config.generationModel, "gpt-image-1");
+    assert.deepEqual(selection.matchedTopics, ["politics"]);
+    assert.deepEqual(selection.matchedKeywords, ["vote"]);
+    assert.equal(selection.fallbackReason, null);
+  } finally {
+    globalThis.fetch = originalFetch;
   }
 });

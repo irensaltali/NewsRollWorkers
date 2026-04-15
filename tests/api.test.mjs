@@ -316,13 +316,19 @@ test("admin media prompt dryRun returns a prompt without saving prompt artifacts
       return Response.json([{
         id: 91,
         key: "news_image_prompt_optimizer",
-        version: "doc_v1",
-        name: "News Image Prompt Optimizer",
-        provider: "openai",
-        model: "gpt-5.4-mini-2026-03-17",
+        version: "v1.1-a",
+        name: "News Image Prompt Optimizer - Production Generalist",
+        optimizer_provider: "openai",
+        optimizer_model: "gpt-5.4-mini-2026-03-17",
+        generation_provider: "fal",
+        generation_model: "fal-ai/flux-2/turbo",
         max_completion_tokens: 500,
         system_prompt: "system",
         user_prompt_template: "template",
+        topic_matchers: ["testing"],
+        keyword_matchers: [],
+        routing_priority: 100,
+        fallback: true,
         settings: {},
         active: true
       }]);
@@ -402,6 +408,15 @@ test("admin media prompt uses optimizerConfigId when provided", async (t) => {
       });
     }
 
+    if (url.includes("/rest/v1/story_content") && method === "GET" && url.includes("select=summary%2Cextracted_text%2Cai_headline%2Ctopics")) {
+      return Response.json({
+        summary: "Stored summary",
+        extracted_text: "Stored text",
+        ai_headline: null,
+        topics: ["finance"]
+      });
+    }
+
     if (url.includes("/rest/v1/story_content") && method === "GET" && url.includes("select=story_id%2Csource_url")) {
       return Response.json([]);
     }
@@ -420,11 +435,17 @@ test("admin media prompt uses optimizerConfigId when provided", async (t) => {
         key: "campaign_optimizer",
         version: "v3",
         name: "Campaign Optimizer",
-        provider: "openai",
-        model: "gpt-5.4-mini-2026-03-17",
+        optimizer_provider: "openai",
+        optimizer_model: "gpt-5.4-mini-2026-03-17",
+        generation_provider: "openai",
+        generation_model: "gpt-image-1",
         max_completion_tokens: 500,
         system_prompt: "system",
         user_prompt_template: "template",
+        topic_matchers: ["finance"],
+        keyword_matchers: ["regulation"],
+        routing_priority: 20,
+        fallback: false,
         settings: {},
         active: true
       });
@@ -464,6 +485,8 @@ test("admin media prompt uses optimizerConfigId when provided", async (t) => {
   const payload = await response.json();
   assert.equal(payload.optimizerUsed.id, 222);
   assert.equal(payload.optimizerUsed.key, "campaign_optimizer");
+  assert.equal(payload.optimizerUsed.optimizerProvider, "openai");
+  assert.equal(payload.optimizerUsed.generationProvider, "openai");
   assert.equal(payload.resolvedPrompt, "Prompt from explicit optimizer config.");
 });
 
@@ -487,23 +510,17 @@ test("admin media generate can apply to an existing story in one request using s
     const url = String(input);
     const method = init.method ?? "GET";
 
-    if (url.startsWith("https://fal.run/")) {
-      return new Response(JSON.stringify({
-        images: [{ url: "https://assets.example.com/generated-apply.webp" }],
-        request_id: "req-admin-apply-1"
-      }), {
-        status: 200,
-        headers: {
-          "content-type": "application/json",
-          "x-fal-billable-units": "1"
-        }
+    if (url === "https://api.openai.com/v1/images/generations") {
+      return Response.json({
+        created: 1710000000,
+        data: [{ url: "https://assets.example.com/generated-apply.png" }]
       });
     }
 
-    if (url === "https://assets.example.com/generated-apply.webp") {
+    if (url === "https://assets.example.com/generated-apply.png") {
       return new Response(Uint8Array.from([1, 2, 3, 4]), {
         status: 200,
-        headers: { "content-type": "image/webp" }
+        headers: { "content-type": "image/png" }
       });
     }
 
@@ -523,6 +540,14 @@ test("admin media generate can apply to an existing story in one request using s
       if (method === "GET") {
         if (url.includes("select=story_id%2Csource_url")) {
           return Response.json([]);
+        }
+        if (url.includes("select=summary%2Cextracted_text%2Cai_headline%2Ctopics")) {
+          return Response.json({
+            summary: "Stored summary from db",
+            extracted_text: "Stored crawl text from db",
+            ai_headline: null,
+            topics: ["technology"]
+          });
         }
         return Response.json({
           extracted_text: "Stored crawl text from db",
@@ -549,13 +574,19 @@ test("admin media generate can apply to an existing story in one request using s
       return Response.json([{
         id: 91,
         key: "news_image_prompt_optimizer",
-        version: "doc_v1",
-        name: "News Image Prompt Optimizer",
-        provider: "openai",
-        model: "gpt-5.4-mini-2026-03-17",
+        version: "v1.1-a",
+        name: "News Image Prompt Optimizer - Production Generalist",
+        optimizer_provider: "openai",
+        optimizer_model: "gpt-5.4-mini-2026-03-17",
+        generation_provider: "openai",
+        generation_model: "gpt-image-1",
         max_completion_tokens: 500,
         system_prompt: "system",
         user_prompt_template: "template",
+        topic_matchers: ["technology"],
+        keyword_matchers: [],
+        routing_priority: 100,
+        fallback: true,
         settings: {},
         active: true
       }]);
@@ -604,8 +635,11 @@ test("admin media generate can apply to an existing story in one request using s
   const payload = await response.json();
   assert.equal(payload.applied, true);
   assert.equal(payload.appliedResult.mediaUrl, writes.storyMedia[0].media_url);
-  assert.equal(payload.appliedResult.summary, null);
+  assert.equal(payload.appliedResult.summary, "Stored summary from db");
   assert.equal(writes.storyMedia.length, 1);
+  assert.equal(writes.storyMedia[0].provider, "openai");
+  assert.equal(writes.storyMedia[0].model, "gpt-image-1");
+  assert.equal(payload.optimizerUsed.generationProvider, "openai");
 });
 
 test("admin media generate can recrawl and fully replace stored story content before applying", async (t) => {
@@ -700,6 +734,14 @@ test("admin media generate can recrawl and fully replace stored story content be
 
     if (url.includes("/rest/v1/story_content")) {
       if (method === "GET") {
+        if (url.includes("select=summary%2Cextracted_text%2Cai_headline%2Ctopics")) {
+          return Response.json({
+            summary: "Old summary",
+            extracted_text: "Old text",
+            ai_headline: "Old headline",
+            topics: ["technology"]
+          });
+        }
         return Response.json([{
           story_id: 12345,
           source_url: "https://example.com/old-story"
@@ -736,13 +778,19 @@ test("admin media generate can recrawl and fully replace stored story content be
       return Response.json([{
         id: 91,
         key: "news_image_prompt_optimizer",
-        version: "doc_v1",
-        name: "News Image Prompt Optimizer",
-        provider: "openai",
-        model: "gpt-5.4-mini-2026-03-17",
+        version: "v1.1-c",
+        name: "News Image Prompt Optimizer - Photojournalistic Realism",
+        optimizer_provider: "openai",
+        optimizer_model: "gpt-5.4-mini-2026-03-17",
+        generation_provider: "fal",
+        generation_model: "fal-ai/flux-2/turbo",
         max_completion_tokens: 500,
         system_prompt: "system",
         user_prompt_template: "template",
+        topic_matchers: ["recrawl", "refresh"],
+        keyword_matchers: [],
+        routing_priority: 10,
+        fallback: false,
         settings: {},
         active: true
       }]);
@@ -861,6 +909,14 @@ test("admin test prompt can save a preview and apply it to overwrite an existing
 
     if (url.includes("/rest/v1/story_content")) {
       if (method === "GET") {
+        if (url.includes("select=summary%2Cextracted_text%2Cai_headline%2Ctopics")) {
+          return Response.json({
+            summary: null,
+            extracted_text: null,
+            ai_headline: null,
+            topics: []
+          });
+        }
         return Response.json([]);
       }
       if (method === "POST") {
@@ -883,13 +939,19 @@ test("admin test prompt can save a preview and apply it to overwrite an existing
       return Response.json([{
         id: 91,
         key: "news_image_prompt_optimizer",
-        version: "doc_v1",
-        name: "News Image Prompt Optimizer",
-        provider: "openai",
-        model: "gpt-5.4-mini-2026-03-17",
+        version: "v1.1-a",
+        name: "News Image Prompt Optimizer - Production Generalist",
+        optimizer_provider: "openai",
+        optimizer_model: "gpt-5.4-mini-2026-03-17",
+        generation_provider: "fal",
+        generation_model: "fal-ai/flux-2/turbo",
         max_completion_tokens: 500,
         system_prompt: "system",
         user_prompt_template: "template",
+        topic_matchers: ["technology"],
+        keyword_matchers: [],
+        routing_priority: 100,
+        fallback: true,
         settings: {},
         active: true
       }]);

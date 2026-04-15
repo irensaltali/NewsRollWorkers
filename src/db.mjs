@@ -6,7 +6,8 @@ import {
   DEFAULT_IMAGE_PROMPT_OPTIMIZER_CONFIG,
   DEFAULT_IMAGE_PROMPT_OPTIMIZER_KEY,
   DEFAULT_IMAGE_PROMPT_OPTIMIZER_VERSION,
-  imagePromptOptimizerConfigWithFallback
+  imagePromptOptimizerConfigWithFallback,
+  selectImagePromptOptimizerConfig
 } from "./image-prompt-optimizer.mjs";
 import {
   queryStoryStats
@@ -398,14 +399,16 @@ export async function getStorySummaryAndContent(env, storyId) {
 
   const { data } = await getDB(env)
     .from("story_content")
-    .select("summary, extracted_text")
+    .select("summary, extracted_text, ai_headline, topics")
     .eq("story_id", storyId)
     .maybeSingle();
 
   if (!data) return null;
   return {
     summary: data.summary ?? null,
-    extractedText: data.extracted_text ?? null
+    extractedText: data.extracted_text ?? null,
+    aiHeadline: data.ai_headline ?? null,
+    topics: Array.isArray(data.topics) ? data.topics : null
   };
 }
 
@@ -838,11 +841,17 @@ function normalizeImagePromptOptimizerConfigRow(r) {
     key: r.key ?? DEFAULT_IMAGE_PROMPT_OPTIMIZER_KEY,
     version: r.version ?? DEFAULT_IMAGE_PROMPT_OPTIMIZER_VERSION,
     name: r.name ?? DEFAULT_IMAGE_PROMPT_OPTIMIZER_CONFIG.name,
-    provider: r.provider ?? DEFAULT_IMAGE_PROMPT_OPTIMIZER_CONFIG.provider,
-    model: r.model ?? DEFAULT_IMAGE_PROMPT_OPTIMIZER_CONFIG.model,
+    optimizerProvider: r.optimizer_provider ?? r.provider ?? DEFAULT_IMAGE_PROMPT_OPTIMIZER_CONFIG.optimizerProvider,
+    optimizerModel: r.optimizer_model ?? r.model ?? DEFAULT_IMAGE_PROMPT_OPTIMIZER_CONFIG.optimizerModel,
+    generationProvider: r.generation_provider ?? DEFAULT_IMAGE_PROMPT_OPTIMIZER_CONFIG.generationProvider,
+    generationModel: r.generation_model ?? DEFAULT_IMAGE_PROMPT_OPTIMIZER_CONFIG.generationModel,
     maxCompletionTokens: Number(r.max_completion_tokens ?? r.maxCompletionTokens ?? DEFAULT_IMAGE_PROMPT_OPTIMIZER_CONFIG.maxCompletionTokens),
     systemPrompt: r.system_prompt ?? r.systemPrompt ?? DEFAULT_IMAGE_PROMPT_OPTIMIZER_CONFIG.systemPrompt,
     userPromptTemplate: r.user_prompt_template ?? r.userPromptTemplate ?? DEFAULT_IMAGE_PROMPT_OPTIMIZER_CONFIG.userPromptTemplate,
+    topicMatchers: r.topic_matchers ?? r.topicMatchers ?? [],
+    keywordMatchers: r.keyword_matchers ?? r.keywordMatchers ?? [],
+    routingPriority: r.routing_priority ?? r.routingPriority ?? DEFAULT_IMAGE_PROMPT_OPTIMIZER_CONFIG.routingPriority,
+    fallback: r.fallback ?? DEFAULT_IMAGE_PROMPT_OPTIMIZER_CONFIG.fallback,
     settings: parsePromptSettings(r.settings ?? r.settings_json, DEFAULT_IMAGE_PROMPT_OPTIMIZER_CONFIG.settings),
     active: r.active ?? true,
     createdAt: r.created_at ?? r.createdAt ?? null,
@@ -850,17 +859,50 @@ function normalizeImagePromptOptimizerConfigRow(r) {
   });
 }
 
+async function listImagePromptOptimizerConfigs(env, {
+  key = null,
+  version = null,
+  activeOnly = true
+} = {}) {
+  if (!hasDB(env)) {
+    return [imagePromptOptimizerConfigWithFallback({
+      ...DEFAULT_IMAGE_PROMPT_OPTIMIZER_CONFIG,
+      key: key ?? DEFAULT_IMAGE_PROMPT_OPTIMIZER_KEY,
+      version: version ?? DEFAULT_IMAGE_PROMPT_OPTIMIZER_VERSION
+    })];
+  }
+
+  let query = getDB(env)
+    .from("image_prompt_optimizer_configs")
+    .select("*");
+
+  if (key) {
+    query = query.eq("key", key);
+  }
+
+  if (version) {
+    query = query.eq("version", version);
+  } else if (activeOnly) {
+    query = query.eq("active", true);
+  }
+
+  const { data } = await query.order("routing_priority", { ascending: true }).order("updated_at", { ascending: false });
+  const rows = Array.isArray(data) ? data : (data ? [data] : []);
+  return rows.map(normalizeImagePromptOptimizerConfigRow).filter(Boolean);
+}
+
 export async function getImagePromptOptimizerConfig(env, {
   id = null,
   key = DEFAULT_IMAGE_PROMPT_OPTIMIZER_KEY,
   version = null,
   activeOnly = true,
-  randomActive = false
+  randomActive = false,
+  input = null
 } = {}) {
   if (!hasDB(env)) {
     return imagePromptOptimizerConfigWithFallback({
       ...DEFAULT_IMAGE_PROMPT_OPTIMIZER_CONFIG,
-      key,
+      key: key ?? DEFAULT_IMAGE_PROMPT_OPTIMIZER_KEY,
       version: version ?? DEFAULT_IMAGE_PROMPT_OPTIMIZER_VERSION
     });
   }
@@ -879,48 +921,72 @@ export async function getImagePromptOptimizerConfig(env, {
     });
   }
 
+  if (input && !version) {
+    const configs = await listImagePromptOptimizerConfigs(env, {
+      key,
+      activeOnly: true
+    });
+    return selectImagePromptOptimizerConfig(configs, input).config;
+  }
+
   if (randomActive && !version) {
-    let randomQuery = getDB(env)
-      .from("image_prompt_optimizer_configs")
-      .select("*")
-      .eq("active", true);
-
-    if (key) {
-      randomQuery = randomQuery.eq("key", key);
-    }
-
-    const { data } = await randomQuery;
-    const configs = (data ?? []).map(normalizeImagePromptOptimizerConfigRow).filter(Boolean);
+    const configs = await listImagePromptOptimizerConfigs(env, {
+      key,
+      activeOnly: true
+    });
     if (configs.length > 0) {
       const selectedIndex = Math.floor(Math.random() * configs.length);
       return configs[selectedIndex];
     }
   }
 
-  let query = getDB(env)
-    .from("image_prompt_optimizer_configs")
-    .select("*");
-
-  if (key) {
-    query = query.eq("key", key);
-  }
-
-  if (version) {
-    query = query.eq("version", version);
-  } else if (activeOnly) {
-    query = query.eq("active", true);
-  }
-
-  const { data } = await query
-    .order("updated_at", { ascending: false })
-    .limit(1)
-    .maybeSingle();
-
-  return normalizeImagePromptOptimizerConfigRow(data) ?? imagePromptOptimizerConfigWithFallback({
-    ...DEFAULT_IMAGE_PROMPT_OPTIMIZER_CONFIG,
+  const configs = await listImagePromptOptimizerConfigs(env, {
     key,
+    version,
+    activeOnly
+  });
+  const data = configs[0] ?? null;
+
+  return data ?? imagePromptOptimizerConfigWithFallback({
+    ...DEFAULT_IMAGE_PROMPT_OPTIMIZER_CONFIG,
+    key: key ?? DEFAULT_IMAGE_PROMPT_OPTIMIZER_KEY,
     version: version ?? DEFAULT_IMAGE_PROMPT_OPTIMIZER_VERSION
   });
+}
+
+export async function resolveImagePromptOptimizerConfig(env, options = {}) {
+  const {
+    id = null,
+    key = DEFAULT_IMAGE_PROMPT_OPTIMIZER_KEY,
+    version = null,
+    activeOnly = true,
+    randomActive = false,
+    input = null
+  } = options;
+
+  if (Number.isInteger(Number(id)) && Number(id) > 0) {
+    return {
+      config: await getImagePromptOptimizerConfig(env, { id: Number(id) }),
+      matchedTopics: [],
+      matchedKeywords: [],
+      fallbackReason: "explicit_id"
+    };
+  }
+
+  if (version || !input) {
+    return {
+      config: await getImagePromptOptimizerConfig(env, { key, version, activeOnly, randomActive }),
+      matchedTopics: [],
+      matchedKeywords: [],
+      fallbackReason: version ? "explicit_version" : (randomActive ? "random_active" : null)
+    };
+  }
+
+  const configs = await listImagePromptOptimizerConfigs(env, {
+    key,
+    activeOnly
+  });
+  return selectImagePromptOptimizerConfig(configs, input);
 }
 
 export async function createImagePromptGeneration(env, payload) {
