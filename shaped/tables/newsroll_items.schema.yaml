@@ -15,4 +15,4 @@ column_schema:
   media_type: String
   media_provider: String
   media_model: String
-  prompt_template_id: Int64
+  optimizer_config_id: Int64

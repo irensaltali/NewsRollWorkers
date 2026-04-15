@@ -17,7 +17,8 @@ import {
   storeHeadline,
   storeAIRequestReceipt,
   storeCachedAIResult,
-  getPromptTemplateById,
+  createImagePromptGeneration,
+  getImagePromptOptimizerConfig,
   upsertMedia,
   updatePublishedFeedEntry,
   updatePublishedFeedEntryMediaProjection,
@@ -56,10 +57,15 @@ import { AI_ACTIONS } from "./ai-actions.mjs";
 import { listAIFeatures } from "./ai-feature-config.mjs";
 import { getSubscriberInfo, getCreditBalance } from "./revenuecat.mjs";
 import { resolveArticleContent, resolveArticleUrl } from "./article-content.mjs";
-import { promptConfigWithFallback, mediaTemplateWithFallback, buildPromptInput, clipPromptText } from "./prompt-config.mjs";
+import { promptConfigWithFallback } from "./prompt-config.mjs";
 import { generateImageWithProvider } from "./media-generation.mjs";
 import { crawlWithFallback } from "./crawl-provider.mjs";
 import { queryPersonalizedFeed, upsertItem as upsertShapedItem } from "./shaped.mjs";
+import {
+  DEFAULT_IMAGE_PROMPT_OPTIMIZER_KEY,
+  buildImagePromptOptimizerInput,
+  generateOptimizedImagePrompt
+} from "./image-prompt-optimizer.mjs";
 
 function now() {
   return new Date().toISOString();
@@ -184,8 +190,10 @@ async function writeAdminTestAsset(env, payload) {
     sourceKind: payload.sourceKind ?? null,
     crawlMetadata: payload.crawlMetadata ?? null,
     resolvedPrompt: payload.resolvedPrompt ?? "",
-    templateUsed: payload.templateUsed ?? null,
-    settings: payload.settings ?? {},
+    optimizerUsed: payload.optimizerUsed ?? null,
+    optimizerInput: payload.optimizerInput ?? null,
+    promptGenerationId: payload.promptGenerationId ?? null,
+    imageGenerationSettings: payload.imageGenerationSettings ?? {},
     provider: payload.provider ?? null,
     model: payload.model ?? null,
     latencyMs: payload.latencyMs ?? null,
@@ -1339,35 +1347,59 @@ async function resolveAdminTestContent(env, body) {
   };
 }
 
-async function resolveAdminTestTemplate(env, body) {
-  let template;
-  if (body.templateText) {
-    template = {
-      id: null,
-      name: "adhoc",
-      templateText: body.templateText,
-      provider: body.provider ?? "fal",
-      model: body.model ?? null,
-      settings: body.settings ?? {},
-      modality: "image"
-    };
-  } else if (body.templateId) {
-    const dbTemplate = await getPromptTemplateById(env, body.templateId);
-    if (!dbTemplate) {
-      throw Object.assign(new Error("Template not found"), { status: 404 });
-    }
-    template = dbTemplate;
-    if (body.provider) template.provider = body.provider;
-    if (body.model) template.model = body.model;
-    if (body.settings) template.settings = { ...template.settings, ...body.settings };
-  } else {
-    template = mediaTemplateWithFallback(null, "image");
-    if (body.provider) template.provider = body.provider;
-    if (body.model) template.model = body.model;
-    if (body.settings) template.settings = { ...template.settings, ...body.settings };
-  }
+async function resolveAdminOptimizerConfig(env, body) {
+  return getImagePromptOptimizerConfig(env, {
+    key: normalizeText(body.optimizerKey) || DEFAULT_IMAGE_PROMPT_OPTIMIZER_KEY,
+    version: normalizeText(body.optimizerVersion) || null
+  });
+}
 
-  return mediaTemplateWithFallback(template, "image");
+function buildAdminOptimizerInput(resolvedContent) {
+  return buildImagePromptOptimizerInput({
+    title: resolvedContent.title,
+    headline: resolvedContent.crawlMetadata?.headline ?? "",
+    summary: resolvedContent.crawlMetadata?.summary ?? "",
+    topics: resolvedContent.crawlMetadata?.topics ?? [],
+    language: resolvedContent.crawlMetadata?.language ?? "en"
+  });
+}
+
+async function runAdminPromptOptimization(env, body, resolvedContent, storyId, source) {
+  const optimizerConfig = await resolveAdminOptimizerConfig(env, body);
+  const optimizerInput = buildAdminOptimizerInput(resolvedContent);
+  const optimization = await generateOptimizedImagePrompt(env, optimizerInput, {
+    config: optimizerConfig,
+    storyId
+  });
+  const promptGenerationId = await createImagePromptGeneration(env, {
+    storyId,
+    source,
+    optimizerConfigId: optimizerConfig.id ?? null,
+    optimizerKey: optimizerConfig.key,
+    optimizerVersion: optimizerConfig.version,
+    optimizerProvider: optimization.provider ?? optimizerConfig.provider,
+    optimizerModel: optimization.model ?? optimizerConfig.model,
+    optimizerInput,
+    optimizedPrompt: optimization.optimizedPrompt,
+    status: optimization.status,
+    latencyMs: optimization.latencyMs,
+    errorText: optimization.errorText
+  });
+
+  return {
+    optimizerConfig,
+    optimizerInput,
+    optimization,
+    promptGenerationId
+  };
+}
+
+function adminImageGenerationOptions(body) {
+  return {
+    provider: normalizeText(body.provider) || "fal",
+    model: normalizeText(body.model) || null,
+    settings: body.settings && typeof body.settings === "object" ? body.settings : null
+  };
 }
 
 async function applyApprovedAdminTest(env, body) {
@@ -1454,8 +1486,9 @@ async function applyApprovedAdminTest(env, body) {
     failureReason: null,
     attempts: 1,
     updatedAt,
-    promptTemplateId: manifest.templateUsed?.id ?? null,
     imagePrompt: manifest.resolvedPrompt ?? null,
+    imagePromptGenerationId: manifest.promptGenerationId ?? null,
+    optimizerConfigId: manifest.optimizerUsed?.id ?? null,
     mediaType: "image",
     provider: manifest.provider ?? null,
     model: manifest.model ?? null,
@@ -1474,9 +1507,7 @@ async function applyApprovedAdminTest(env, body) {
     mediaModel: manifest.model ?? null,
     generationStatus: "ready",
     generationLatencyMs: Number.isFinite(manifest.latencyMs) ? manifest.latencyMs : null,
-    generationCostUsd: null,
-    promptTemplateId: manifest.templateUsed?.id ?? null,
-    promptTemplateName: manifest.templateUsed?.name ?? null
+    generationCostUsd: null
   });
 
   const updatedEntry = {
@@ -1500,7 +1531,7 @@ async function applyApprovedAdminTest(env, body) {
     mediaType: "image",
     mediaProvider: manifest.provider ?? null,
     mediaModel: manifest.model ?? null,
-    promptTemplateId: manifest.templateUsed?.id ?? null
+    optimizerConfigId: manifest.optimizerUsed?.id ?? null
   });
 
   return json({
@@ -1554,17 +1585,49 @@ async function handleAdminTestPrompt(request, env) {
       : null;
     const resolvedContent = await resolveAdminTestContent(env, body);
     const shouldGenerateImage = body.generateImage !== false;
+    const optimized = await runAdminPromptOptimization(env, body, resolvedContent, storyId, "admin_test_prompt");
 
-    if (!shouldGenerateImage) {
+    let optimizerPromptRunEventId = null;
+    if (body.logPromptRun !== false) {
+      try {
+        const eventResult = await createPromptRunEvent(env, {
+          source: "admin_test_prompt_optimizer",
+          promptKind: "media",
+          promptKey: optimized.optimizerConfig.key,
+          promptVersion: optimized.optimizerConfig.version,
+          optimizerConfigId: optimized.optimizerConfig.id ?? null,
+          provider: optimized.optimization.provider ?? optimized.optimizerConfig.provider,
+          model: optimized.optimization.model ?? optimized.optimizerConfig.model,
+          modality: "text",
+          status: optimized.optimization.status,
+          latencyMs: optimized.optimization.latencyMs ?? null,
+          requestExcerpt: optimized.optimization.userPrompt?.slice(0, 500) ?? null,
+          responseExcerpt: optimized.optimization.optimizedPrompt?.slice(0, 500) ?? null,
+          errorText: optimized.optimization.errorText ?? null,
+          storyId
+        });
+        optimizerPromptRunEventId = eventResult?.id ?? null;
+      } catch (err) {
+        log.warn({ event: "test_prompt_optimizer_log_fail", ...log.fmtError(err) });
+      }
+    }
+
+    if (!shouldGenerateImage || optimized.optimization.status !== "ready" || !optimized.optimization.optimizedPrompt) {
       return json({
-        status: "resolved",
+        status: optimized.optimization.status === "ready" ? "resolved" : "failed",
         imageUrl: null,
         r2Url: null,
         provider: null,
         model: null,
-        resolvedPrompt: null,
-        templateUsed: null,
-        settings: null,
+        resolvedPrompt: optimized.optimization.optimizedPrompt ?? null,
+        optimizerUsed: {
+          id: optimized.optimizerConfig.id,
+          key: optimized.optimizerConfig.key,
+          version: optimized.optimizerConfig.version,
+          name: optimized.optimizerConfig.name
+        },
+        optimizerInput: optimized.optimizerInput,
+        imageGenerationSettings: null,
         resolvedContent: {
           title: resolvedContent.title,
           textLength: resolvedContent.articleText.length,
@@ -1573,30 +1636,29 @@ async function handleAdminTestPrompt(request, env) {
           sourceUrl: resolvedContent.sourceUrl,
           metadata: resolvedContent.crawlMetadata,
           crawlProvider: resolvedContent.crawlProvider ?? null,
-        cfError: resolvedContent.cfError ?? null,
-        cfFailureKind: resolvedContent.cfFailureKind ?? null
+          cfError: resolvedContent.cfError ?? null,
+          cfFailureKind: resolvedContent.cfFailureKind ?? null
         },
         targetStory: existingEntry,
+        optimizerLatencyMs: optimized.optimization.latencyMs ?? 0,
         latencyMs: 0,
         totalMs: Date.now() - start,
-        error: null,
-        promptRunEventId: null,
+        error: optimized.optimization.errorText ?? null,
+        promptGenerationId: optimized.promptGenerationId,
+        optimizerPromptRunEventId,
+        imagePromptRunEventId: null,
         billableUnits: null,
         approval: null
       });
     }
 
-    const template = await resolveAdminTestTemplate(env, body);
-    const resolvedPrompt = buildPromptInput(template.templateText, {
-      title: resolvedContent.title,
-      sourceText: clipPromptText(resolvedContent.articleText, 1200)
-    });
-
+    const resolvedPrompt = optimized.optimization.optimizedPrompt;
+    const imageOptions = adminImageGenerationOptions(body);
     const genStart = Date.now();
     const result = await generateImageWithProvider(env, {
-      provider: template.provider,
-      model: template.model,
-      settings: template.settings,
+      provider: imageOptions.provider,
+      model: imageOptions.model,
+      settings: imageOptions.settings,
       prompt: resolvedPrompt,
       storyId
     });
@@ -1615,14 +1677,17 @@ async function handleAdminTestPrompt(request, env) {
           sourceKind: resolvedContent.sourceKind,
           crawlMetadata: resolvedContent.crawlMetadata,
           resolvedPrompt,
-          templateUsed: {
-            id: template.id,
-            name: template.name,
-            templateText: template.templateText
+          optimizerUsed: {
+            id: optimized.optimizerConfig.id,
+            key: optimized.optimizerConfig.key,
+            version: optimized.optimizerConfig.version,
+            name: optimized.optimizerConfig.name
           },
-          settings: template.settings,
-          provider: result.provider ?? template.provider,
-          model: result.model ?? template.model,
+          optimizerInput: optimized.optimizerInput,
+          promptGenerationId: optimized.promptGenerationId,
+          imageGenerationSettings: imageOptions.settings ?? {},
+          provider: result.provider ?? imageOptions.provider,
+          model: result.model ?? imageOptions.model,
           latencyMs,
           billableUnits: result.billableUnits ?? null,
           assetUrl: result.url
@@ -1638,14 +1703,17 @@ async function handleAdminTestPrompt(request, env) {
           sourceKind: resolvedContent.sourceKind,
           crawlMetadata: resolvedContent.crawlMetadata,
           resolvedPrompt,
-          templateUsed: {
-            id: template.id,
-            name: template.name,
-            templateText: template.templateText
+          optimizerUsed: {
+            id: optimized.optimizerConfig.id,
+            key: optimized.optimizerConfig.key,
+            version: optimized.optimizerConfig.version,
+            name: optimized.optimizerConfig.name
           },
-          settings: template.settings,
-          provider: result.provider ?? template.provider,
-          model: result.model ?? template.model,
+          optimizerInput: optimized.optimizerInput,
+          promptGenerationId: optimized.promptGenerationId,
+          imageGenerationSettings: imageOptions.settings ?? {},
+          provider: result.provider ?? imageOptions.provider,
+          model: result.model ?? imageOptions.model,
           latencyMs,
           billableUnits: result.billableUnits ?? null,
           assetUrl: result.url
@@ -1654,16 +1722,17 @@ async function handleAdminTestPrompt(request, env) {
       }
     }
 
-    let promptRunEventId = null;
+    let imagePromptRunEventId = null;
     if (body.logPromptRun !== false) {
       try {
         const eventResult = await createPromptRunEvent(env, {
           source: "admin_test_prompt",
           promptKind: "media",
-          promptKey: template.name ?? "adhoc",
-          promptTemplateId: template.id ?? null,
-          provider: result.provider ?? template.provider ?? "fal",
-          model: result.model ?? template.model ?? null,
+          promptKey: optimized.optimizerConfig.key,
+          promptVersion: optimized.optimizerConfig.version,
+          optimizerConfigId: optimized.optimizerConfig.id ?? null,
+          provider: result.provider ?? imageOptions.provider ?? "fal",
+          model: result.model ?? imageOptions.model ?? null,
           modality: "image",
           status: result.status === "ready" ? "ready" : "failed",
           latencyMs,
@@ -1673,7 +1742,7 @@ async function handleAdminTestPrompt(request, env) {
           errorText: result.errorText ?? null,
           storyId
         });
-        promptRunEventId = eventResult?.id ?? null;
+        imagePromptRunEventId = eventResult?.id ?? null;
       } catch (err) {
         log.warn({ event: "test_prompt_log_fail", ...log.fmtError(err) });
       }
@@ -1683,15 +1752,17 @@ async function handleAdminTestPrompt(request, env) {
       status: result.status,
       imageUrl: result.url ?? null,
       r2Url,
-      provider: result.provider ?? template.provider,
-      model: result.model ?? template.model,
+      provider: result.provider ?? imageOptions.provider,
+      model: result.model ?? imageOptions.model,
       resolvedPrompt,
-      templateUsed: {
-        id: template.id,
-        name: template.name,
-        templateText: template.templateText
+      optimizerUsed: {
+        id: optimized.optimizerConfig.id,
+        key: optimized.optimizerConfig.key,
+        version: optimized.optimizerConfig.version,
+        name: optimized.optimizerConfig.name
       },
-      settings: template.settings,
+      optimizerInput: optimized.optimizerInput,
+      imageGenerationSettings: imageOptions.settings ?? null,
       resolvedContent: {
         title: resolvedContent.title,
         textLength: resolvedContent.articleText.length,
@@ -1704,10 +1775,13 @@ async function handleAdminTestPrompt(request, env) {
         cfFailureKind: resolvedContent.cfFailureKind ?? null
       },
       targetStory: existingEntry,
+      optimizerLatencyMs: optimized.optimization.latencyMs ?? 0,
       latencyMs,
       totalMs: Date.now() - start,
       error: result.errorText ?? null,
-      promptRunEventId,
+      promptGenerationId: optimized.promptGenerationId,
+      optimizerPromptRunEventId,
+      imagePromptRunEventId,
       billableUnits: result.billableUnits ?? null,
       approval: approval ? {
         canApply: true,
@@ -1738,17 +1812,43 @@ async function handleAdminMediaPrompt(request, env) {
     const existingEntry = storyId
       ? (await getPublishedFeedEntriesByStoryIds(env, [storyId]))[0] ?? null : null;
     const resolvedContent = await resolveAdminTestContent(env, body);
-    const template = await resolveAdminTestTemplate(env, body);
-    const resolvedPrompt = buildPromptInput(template.templateText, {
-      title: resolvedContent.title,
-      sourceText: clipPromptText(resolvedContent.articleText, 1200)
-    });
+    const optimized = await runAdminPromptOptimization(env, body, resolvedContent, storyId, "admin_media_prompt");
+
+    let optimizerPromptRunEventId = null;
+    if (body.logPromptRun !== false) {
+      try {
+        const eventResult = await createPromptRunEvent(env, {
+          source: "admin_media_prompt_optimizer",
+          promptKind: "media",
+          promptKey: optimized.optimizerConfig.key,
+          promptVersion: optimized.optimizerConfig.version,
+          optimizerConfigId: optimized.optimizerConfig.id ?? null,
+          provider: optimized.optimization.provider ?? optimized.optimizerConfig.provider,
+          model: optimized.optimization.model ?? optimized.optimizerConfig.model,
+          modality: "text",
+          status: optimized.optimization.status,
+          latencyMs: optimized.optimization.latencyMs ?? null,
+          requestExcerpt: optimized.optimization.userPrompt?.slice(0, 500) ?? null,
+          responseExcerpt: optimized.optimization.optimizedPrompt?.slice(0, 500) ?? null,
+          errorText: optimized.optimization.errorText ?? null,
+          storyId
+        });
+        optimizerPromptRunEventId = eventResult?.id ?? null;
+      } catch (err) {
+        log.warn({ event: "admin_media_prompt_log_fail", ...log.fmtError(err) });
+      }
+    }
 
     return json({
-      status: "resolved",
-      resolvedPrompt,
-      templateUsed: { id: template.id, name: template.name, templateText: template.templateText },
-      settings: template.settings,
+      status: optimized.optimization.status === "ready" ? "resolved" : "failed",
+      resolvedPrompt: optimized.optimization.optimizedPrompt ?? null,
+      optimizerUsed: {
+        id: optimized.optimizerConfig.id,
+        key: optimized.optimizerConfig.key,
+        version: optimized.optimizerConfig.version,
+        name: optimized.optimizerConfig.name
+      },
+      optimizerInput: optimized.optimizerInput,
       resolvedContent: {
         title: resolvedContent.title,
         textLength: resolvedContent.articleText.length,
@@ -1761,6 +1861,10 @@ async function handleAdminMediaPrompt(request, env) {
         cfFailureKind: resolvedContent.cfFailureKind ?? null
       },
       targetStory: existingEntry,
+      promptGenerationId: optimized.promptGenerationId,
+      optimizerPromptRunEventId,
+      optimizerLatencyMs: optimized.optimization.latencyMs ?? 0,
+      error: optimized.optimization.errorText ?? null,
       totalMs: Date.now() - start
     });
   } catch (err) {
@@ -1782,17 +1886,80 @@ async function handleAdminMediaGenerate(request, env) {
     const existingEntry = storyId
       ? (await getPublishedFeedEntriesByStoryIds(env, [storyId]))[0] ?? null : null;
     const resolvedContent = await resolveAdminTestContent(env, body);
-    const template = await resolveAdminTestTemplate(env, body);
-    const resolvedPrompt = buildPromptInput(template.templateText, {
-      title: resolvedContent.title,
-      sourceText: clipPromptText(resolvedContent.articleText, 1200)
-    });
+    const optimized = await runAdminPromptOptimization(env, body, resolvedContent, storyId, "admin_media_generate");
+    let optimizerPromptRunEventId = null;
+    if (body.logPromptRun !== false) {
+      try {
+        const eventResult = await createPromptRunEvent(env, {
+          source: "admin_media_generate_optimizer",
+          promptKind: "media",
+          promptKey: optimized.optimizerConfig.key,
+          promptVersion: optimized.optimizerConfig.version,
+          optimizerConfigId: optimized.optimizerConfig.id ?? null,
+          provider: optimized.optimization.provider ?? optimized.optimizerConfig.provider,
+          model: optimized.optimization.model ?? optimized.optimizerConfig.model,
+          modality: "text",
+          status: optimized.optimization.status,
+          latencyMs: optimized.optimization.latencyMs ?? null,
+          requestExcerpt: optimized.optimization.userPrompt?.slice(0, 500) ?? null,
+          responseExcerpt: optimized.optimization.optimizedPrompt?.slice(0, 500) ?? null,
+          errorText: optimized.optimization.errorText ?? null,
+          storyId
+        });
+        optimizerPromptRunEventId = eventResult?.id ?? null;
+      } catch (err) {
+        log.warn({ event: "admin_media_generate_optimizer_log_fail", ...log.fmtError(err) });
+      }
+    }
+
+    if (optimized.optimization.status !== "ready" || !optimized.optimization.optimizedPrompt) {
+      return json({
+        status: "failed",
+        imageUrl: null,
+        previewId: null,
+        previewAssetUrl: null,
+        provider: null,
+        model: null,
+        resolvedPrompt: optimized.optimization.optimizedPrompt ?? null,
+        optimizerUsed: {
+          id: optimized.optimizerConfig.id,
+          key: optimized.optimizerConfig.key,
+          version: optimized.optimizerConfig.version,
+          name: optimized.optimizerConfig.name
+        },
+        optimizerInput: optimized.optimizerInput,
+        imageGenerationSettings: null,
+        resolvedContent: {
+          title: resolvedContent.title,
+          textLength: resolvedContent.articleText.length,
+          textPreview: clipAdminPreviewText(resolvedContent.articleText),
+          sourceKind: resolvedContent.sourceKind,
+          sourceUrl: resolvedContent.sourceUrl,
+          metadata: resolvedContent.crawlMetadata,
+          crawlProvider: resolvedContent.crawlProvider ?? null,
+          cfError: resolvedContent.cfError ?? null,
+          cfFailureKind: resolvedContent.cfFailureKind ?? null
+        },
+        targetStory: existingEntry,
+        optimizerLatencyMs: optimized.optimization.latencyMs ?? 0,
+        latencyMs: 0,
+        totalMs: Date.now() - start,
+        error: optimized.optimization.errorText ?? null,
+        promptGenerationId: optimized.promptGenerationId,
+        optimizerPromptRunEventId,
+        imagePromptRunEventId: null,
+        billableUnits: null
+      });
+    }
+
+    const resolvedPrompt = optimized.optimization.optimizedPrompt;
+    const imageOptions = adminImageGenerationOptions(body);
 
     const genStart = Date.now();
     const result = await generateImageWithProvider(env, {
-      provider: template.provider,
-      model: template.model,
-      settings: template.settings,
+      provider: imageOptions.provider,
+      model: imageOptions.model,
+      settings: imageOptions.settings,
       prompt: resolvedPrompt,
       storyId
     });
@@ -1810,10 +1977,17 @@ async function handleAdminMediaGenerate(request, env) {
         sourceKind: resolvedContent.sourceKind,
         crawlMetadata: resolvedContent.crawlMetadata,
         resolvedPrompt,
-        templateUsed: { id: template.id, name: template.name, templateText: template.templateText },
-        settings: template.settings,
-        provider: result.provider ?? template.provider,
-        model: result.model ?? template.model,
+        optimizerUsed: {
+          id: optimized.optimizerConfig.id,
+          key: optimized.optimizerConfig.key,
+          version: optimized.optimizerConfig.version,
+          name: optimized.optimizerConfig.name
+        },
+        optimizerInput: optimized.optimizerInput,
+        promptGenerationId: optimized.promptGenerationId,
+        imageGenerationSettings: imageOptions.settings ?? {},
+        provider: result.provider ?? imageOptions.provider,
+        model: result.model ?? imageOptions.model,
         latencyMs,
         billableUnits: result.billableUnits ?? null,
         assetUrl: result.url
@@ -1828,10 +2002,11 @@ async function handleAdminMediaGenerate(request, env) {
         const eventResult = await createPromptRunEvent(env, {
           source: "admin_media_generate",
           promptKind: "media",
-          promptKey: template.name ?? "adhoc",
-          promptTemplateId: template.id ?? null,
-          provider: result.provider ?? template.provider ?? "fal",
-          model: result.model ?? template.model ?? null,
+          promptKey: optimized.optimizerConfig.key,
+          promptVersion: optimized.optimizerConfig.version,
+          optimizerConfigId: optimized.optimizerConfig.id ?? null,
+          provider: result.provider ?? imageOptions.provider ?? "fal",
+          model: result.model ?? imageOptions.model ?? null,
           modality: "image",
           status: result.status === "ready" ? "ready" : "failed",
           latencyMs,
@@ -1852,11 +2027,17 @@ async function handleAdminMediaGenerate(request, env) {
       imageUrl: result.url ?? null,
       previewId,
       previewAssetUrl,
-      provider: result.provider ?? template.provider,
-      model: result.model ?? template.model,
+      provider: result.provider ?? imageOptions.provider,
+      model: result.model ?? imageOptions.model,
       resolvedPrompt,
-      templateUsed: { id: template.id, name: template.name, templateText: template.templateText },
-      settings: template.settings,
+      optimizerUsed: {
+        id: optimized.optimizerConfig.id,
+        key: optimized.optimizerConfig.key,
+        version: optimized.optimizerConfig.version,
+        name: optimized.optimizerConfig.name
+      },
+      optimizerInput: optimized.optimizerInput,
+      imageGenerationSettings: imageOptions.settings ?? null,
       resolvedContent: {
         title: resolvedContent.title,
         textLength: resolvedContent.articleText.length,
@@ -1869,10 +2050,13 @@ async function handleAdminMediaGenerate(request, env) {
         cfFailureKind: resolvedContent.cfFailureKind ?? null
       },
       targetStory: existingEntry,
+      optimizerLatencyMs: optimized.optimization.latencyMs ?? 0,
       latencyMs,
       totalMs: Date.now() - start,
       error: result.errorText ?? null,
-      promptRunEventId,
+      promptGenerationId: optimized.promptGenerationId,
+      optimizerPromptRunEventId,
+      imagePromptRunEventId: promptRunEventId,
       billableUnits: result.billableUnits ?? null
     });
   } catch (err) {
@@ -1963,8 +2147,9 @@ async function handleAdminMediaSave(request, env) {
       failureReason: null,
       attempts: 1,
       updatedAt,
-      promptTemplateId: manifest.templateUsed?.id ?? null,
       imagePrompt: manifest.resolvedPrompt ?? null,
+      imagePromptGenerationId: manifest.promptGenerationId ?? null,
+      optimizerConfigId: manifest.optimizerUsed?.id ?? null,
       mediaType: "image",
       provider: manifest.provider ?? null,
       model: manifest.model ?? null,
@@ -2005,7 +2190,7 @@ async function handleAdminMediaSave(request, env) {
       mediaType: "image",
       mediaProvider: manifest.provider ?? null,
       mediaModel: manifest.model ?? null,
-      promptTemplateId: manifest.templateUsed?.id ?? null
+      optimizerConfigId: manifest.optimizerUsed?.id ?? null
     });
 
     return json({
@@ -2115,8 +2300,9 @@ async function handleAdminMediaApply(request, env, pathStoryId) {
       failureReason: null,
       attempts: 1,
       updatedAt,
-      promptTemplateId: manifest.templateUsed?.id ?? null,
       imagePrompt: manifest.resolvedPrompt ?? null,
+      imagePromptGenerationId: manifest.promptGenerationId ?? null,
+      optimizerConfigId: manifest.optimizerUsed?.id ?? null,
       mediaType: "image",
       provider: manifest.provider ?? null,
       model: manifest.model ?? null,
@@ -2135,9 +2321,7 @@ async function handleAdminMediaApply(request, env, pathStoryId) {
       mediaModel: manifest.model ?? null,
       generationStatus: "ready",
       generationLatencyMs: Number.isFinite(manifest.latencyMs) ? manifest.latencyMs : null,
-      generationCostUsd: null,
-      promptTemplateId: manifest.templateUsed?.id ?? null,
-      promptTemplateName: manifest.templateUsed?.name ?? null
+      generationCostUsd: null
     });
 
     const updatedEntry = {
@@ -2161,7 +2345,7 @@ async function handleAdminMediaApply(request, env, pathStoryId) {
       mediaType: "image",
       mediaProvider: manifest.provider ?? null,
       mediaModel: manifest.model ?? null,
-      promptTemplateId: manifest.templateUsed?.id ?? null
+      optimizerConfigId: manifest.optimizerUsed?.id ?? null
     });
 
     return json({

@@ -65,7 +65,7 @@ export async function upsertItem(env, item) {
       media_type: item.mediaType ?? null,
       media_provider: item.mediaProvider ?? null,
       media_model: item.mediaModel ?? null,
-      prompt_template_id: item.promptTemplateId ?? null,
+      optimizer_config_id: item.optimizerConfigId ?? null,
     };
 
     const url = `${SHAPED_BASE_URL}/v2/tables/${itemsTable(env)}/insert`;

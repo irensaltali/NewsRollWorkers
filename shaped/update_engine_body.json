@@ -1,0 +1,78 @@
+{
+  "version": "v2",
+  "name": "newsroll_visual_v1",
+  "data": {
+    "item_table": {
+      "name": "newsroll_items",
+      "type": "table"
+    },
+    "interaction_table": {
+      "name": "newsroll_interactions",
+      "type": "table"
+    },
+    "filters": [
+      {
+        "name": "exclude_seen",
+        "filter_type": {
+          "type": "personal",
+          "user_id_column": "user_id",
+          "item_id_column": "item_id"
+        },
+        "filter_table": {
+          "type": "query",
+          "query": "SELECT DISTINCT user_id, item_id\nFROM newsroll_interactions\n"
+        }
+      }
+    ],
+    "schema_override": {
+      "item": {
+        "id": "item_id",
+        "created_at": "created_at",
+        "features": [
+          { "name": "headline", "type": "Text" },
+          { "name": "title", "type": "Text" },
+          { "name": "summary", "type": "Text" },
+          { "name": "category", "type": "TextCategory" },
+          { "name": "topics", "type": "Sequence[TextCategory]" },
+          { "name": "media_type", "type": "TextCategory" }
+        ]
+      }
+    }
+  },
+  "index": {
+    "lexical_search": {
+      "item_fields": ["headline", "title", "summary", "category", "topics"]
+    },
+    "embeddings": [
+      {
+        "name": "news_content_embedding",
+        "encoder": {
+          "type": "hugging_face",
+          "model_name": "sentence-transformers/all-MiniLM-L6-v2",
+          "batch_size": 256,
+          "item_fields": ["headline", "title", "summary", "category", "topics"]
+        }
+      }
+    ]
+  },
+  "deployment": {
+    "data_tier": "cold_tier",
+    "pagination": {
+      "page_expiration_in_seconds": 86400
+    }
+  },
+  "queries": {
+    "trending_feed": {
+      "query": "SELECT *\nFROM retrieve(column_order(columns='_derived_popular_rank ASC', limit=1000))\nLIMIT $count\n",
+      "parameters": { "count": { "default": 20 } }
+    },
+    "personalized_trending_feed": {
+      "query": "SELECT score(\n         expression='((0.15 / ((((now_seconds() - item.created_at) / 3600) + 2) ** 1.35)) + cosine_similarity(text_encoding(item, embedding_ref=''news_content_embedding''), pooled_text_encoding(user.recent_interactions, embedding_ref=''news_content_embedding'')))',\n         input_user_id='$user_id'\n       ) AS s,\n       diversity(score=s, strength=0.25) AS d,\n       exploration(score=s, strength=0.10) AS r,\n       *\nFROM retrieve(column_order(columns='_derived_popular_rank ASC', limit=1000))\nWHERE prebuilt('exclude_seen', input_user_id='$user_id')\nORDER BY r\nLIMIT $count\n",
+      "parameters": { "user_id": { "default": null }, "count": { "default": 20 } }
+    },
+    "rerank_candidates": {
+      "query": "SELECT score(\n         expression='((0.10 / ((((now_seconds() - item.created_at) / 3600) + 2) ** 1.35)) + cosine_similarity(text_encoding(item, embedding_ref=''news_content_embedding''), pooled_text_encoding(user.recent_interactions, embedding_ref=''news_content_embedding'')))',\n         input_user_id='$user_id'\n       ) AS s,\n       diversity(score=s, strength=0.25) AS d,\n       exploration(score=s, strength=0.10) AS r,\n       *\nFROM retrieve(ids($candidate_item_ids))\nWHERE prebuilt('exclude_seen', input_user_id='$user_id')\nORDER BY r\nLIMIT 50\n",
+      "parameters": { "candidate_item_ids": { "default": [] }, "user_id": { "default": null } }
+    }
+  }
+}

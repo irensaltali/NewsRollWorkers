@@ -1,6 +1,6 @@
 import { processMediaMessage } from "../../src/media-pipeline.mjs";
 import { GlobalVisualFeedCoordinator } from "../../src/global-visual-feed-coordinator.mjs";
-import { getPromptTemplateStats } from "../../src/db.mjs";
+import { getImagePromptOptimizerStats } from "../../src/db.mjs";
 import * as log from "../../src/log.mjs";
 
 export { GlobalVisualFeedCoordinator };
@@ -13,10 +13,10 @@ export default {
       return Response.json({ ok: true, service: "newsroll-processor", environment: env.ENVIRONMENT ?? "unknown" });
     }
 
-    if (pathname === "/stats/templates") {
+    if (pathname === "/stats/templates" || pathname === "/stats/optimizers") {
       const url = new URL(request.url);
       const days = Number.parseInt(url.searchParams.get("days") ?? "30", 10);
-      const stats = await getPromptTemplateStats(env, Number.isFinite(days) && days > 0 ? days : 30);
+      const stats = await getImagePromptOptimizerStats(env, Number.isFinite(days) && days > 0 ? days : 30);
       return Response.json({ ok: true, stats });
     }
 

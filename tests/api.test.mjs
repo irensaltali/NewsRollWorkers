@@ -169,6 +169,18 @@ test("admin test prompt can resolve crawl content without generating an image", 
   globalThis.fetch = async (input, init = {}) => {
     const url = String(input);
 
+    if (url === "https://api.openai.com/v1/chat/completions") {
+      return Response.json({
+        choices: [
+          {
+            message: {
+              content: "Optimized editorial image prompt from admin crawl metadata."
+            }
+          }
+        ]
+      });
+    }
+
     if (url.endsWith("/browser-rendering/crawl")) {
       return Response.json({
         success: true,
@@ -222,6 +234,7 @@ test("admin test prompt can resolve crawl content without generating an image", 
   }), {
     ...env,
     ADMIN_API_KEY: "admin-secret",
+    OPENAI_API_KEY: "openai-test-key",
     CLOUDFLARE_ACCOUNT_ID: "account-123",
     CLOUDFLARE_API_TOKEN: "token-123"
   });
@@ -230,6 +243,7 @@ test("admin test prompt can resolve crawl content without generating an image", 
   const payload = await response.json();
   assert.equal(payload.status, "resolved");
   assert.equal(payload.imageUrl, null);
+  assert.equal(payload.resolvedPrompt, "Optimized editorial image prompt from admin crawl metadata.");
   assert.equal(payload.resolvedContent.title, "Crawled admin title");
   assert.equal(payload.resolvedContent.sourceKind, "crawl");
   assert.equal(payload.resolvedContent.textPreview.includes("Body from crawl"), true);
@@ -249,7 +263,8 @@ test("admin test prompt can save a preview and apply it to overwrite an existing
   const writes = {
     storyMedia: [],
     storyContent: [],
-    promptRunEvents: []
+    promptRunEvents: [],
+    promptGenerations: []
   };
   const publishedEntry = {
     story_id: 12345,
@@ -285,6 +300,18 @@ test("admin test prompt can save a preview and apply it to overwrite an existing
       });
     }
 
+    if (url === "https://api.openai.com/v1/chat/completions") {
+      return Response.json({
+        choices: [
+          {
+            message: {
+              content: "Optimized editorial prompt for manual admin article."
+            }
+          }
+        ]
+      });
+    }
+
     if (url.includes("/rest/v1/story_content")) {
       if (method === "GET") {
         return Response.json([]);
@@ -303,6 +330,27 @@ test("admin test prompt can save a preview and apply it to overwrite an existing
         Object.assign(publishedEntry, JSON.parse(init.body));
         return Response.json([publishedEntry]);
       }
+    }
+
+    if (url.includes("/rest/v1/image_prompt_optimizer_configs") && method === "GET") {
+      return Response.json([{
+        id: 91,
+        key: "news_image_prompt_optimizer",
+        version: "doc_v1",
+        name: "News Image Prompt Optimizer",
+        provider: "openai",
+        model: "gpt-5.4-mini-2026-03-17",
+        max_completion_tokens: 500,
+        system_prompt: "system",
+        user_prompt_template: "template",
+        settings: {},
+        active: true
+      }]);
+    }
+
+    if (url.includes("/rest/v1/image_prompt_generations") && method === "POST") {
+      writes.promptGenerations.push(JSON.parse(init.body));
+      return Response.json([{ id: 501 }]);
     }
 
     if (url.includes("/rest/v1/story_media") && method === "POST") {
@@ -326,6 +374,7 @@ test("admin test prompt can save a preview and apply it to overwrite an existing
     ...env,
     ADMIN_API_KEY: "admin-secret",
     FAL_API_KEY: "fal-test-key",
+    OPENAI_API_KEY: "openai-test-key",
     SUPABASE_URL: "https://example.supabase.co",
     SUPABASE_SECRET_KEY: "service-role-test",
     PUBLIC_MEDIA_BASE_URL: "https://media.example.com",
@@ -365,9 +414,11 @@ test("admin test prompt can save a preview and apply it to overwrite an existing
   assert.equal(previewResponse.status, 200);
   const previewPayload = await previewResponse.json();
   assert.equal(previewPayload.status, "ready");
+  assert.equal(previewPayload.resolvedPrompt, "Optimized editorial prompt for manual admin article.");
   assert.equal(previewPayload.approval.canApply, true);
   assert.equal(previewPayload.resolvedContent.sourceKind, "provided");
   assert.equal(previewPayload.r2Url, previewPayload.approval.testAssetUrl);
+  assert.equal(writes.promptGenerations.length, 1);
 
   const applyResponse = await worker.fetch(new Request("https://example.com/admin/test-prompt", {
     method: "POST",
@@ -589,6 +640,17 @@ test("POST /admin/media/crawl returns running task immediately", async (t) => {
   globalThis.setTimeout = (fn, _ms, ...args) => { fn(...args); return 0; };
   globalThis.fetch = async (input) => {
     const url = String(input);
+    if (url === "https://api.openai.com/v1/chat/completions") {
+      return Response.json({
+        choices: [
+          {
+            message: {
+              content: "Optimized prompt from async crawl task."
+            }
+          }
+        ]
+      });
+    }
     if (url.endsWith("/browser-rendering/crawl")) {
       return Response.json({ success: true, result: "job-async-crawl-1" });
     }
@@ -622,6 +684,7 @@ test("POST /admin/media/crawl returns running task immediately", async (t) => {
   const crawlEnv = {
     ...env,
     ADMIN_API_KEY: "admin-secret",
+    OPENAI_API_KEY: "openai-test-key",
     CLOUDFLARE_ACCOUNT_ID: "account-123",
     CLOUDFLARE_API_TOKEN: "token-123",
     VISUAL_FEED_CACHE: kv
@@ -666,6 +729,8 @@ test("POST /admin/media/crawl returns running task immediately", async (t) => {
 
   assert.equal(promptRes.status, 200);
   const promptPayload = await promptRes.json();
+  assert.equal(promptPayload.status, "resolved");
+  assert.equal(promptPayload.resolvedPrompt, "Optimized prompt from async crawl task.");
   assert.equal(promptPayload.resolvedContent.sourceKind, "crawl");
   assert.equal(promptPayload.resolvedContent.crawlProvider, "cloudflare");
   assert.ok(promptPayload.resolvedContent.textPreview.includes("Async Article"));

@@ -3,6 +3,12 @@ import { fixtureFeed } from "./fixtures.mjs";
 import { normalizePersistedCostFields, serializeCostFields } from "./model-catalog.mjs";
 import { AI_PROMPT_KEYS, DEFAULT_AI_PROMPT_CONFIGS, parsePromptSettings } from "./prompt-config.mjs";
 import {
+  DEFAULT_IMAGE_PROMPT_OPTIMIZER_CONFIG,
+  DEFAULT_IMAGE_PROMPT_OPTIMIZER_KEY,
+  DEFAULT_IMAGE_PROMPT_OPTIMIZER_VERSION,
+  imagePromptOptimizerConfigWithFallback
+} from "./image-prompt-optimizer.mjs";
+import {
   queryStoryStats
 } from "./event-analytics.mjs";
 import * as log from "./log.mjs";
@@ -418,8 +424,9 @@ export async function upsertMedia(env, payload) {
       failure_reason: payload.failureReason ?? null,
       attempts: payload.attempts ?? 0,
       updated_at: payload.updatedAt,
-      prompt_template_id: payload.promptTemplateId ?? null,
       image_prompt: payload.imagePrompt ?? null,
+      image_prompt_generation_id: payload.imagePromptGenerationId ?? null,
+      optimizer_config_id: payload.optimizerConfigId ?? null,
       media_type: payload.mediaType ?? null,
       provider: payload.provider ?? null,
       model: payload.model ?? null,
@@ -446,8 +453,7 @@ export async function releaseMediaQueueSlot(env, storyId) {
     .delete()
     .eq("story_id", storyId)
     .eq("status", "queued")
-    .eq("attempts", 0)
-    .is("prompt_template_id", null);
+    .eq("attempts", 0);
 }
 
 export async function cleanupStaleMedia(env, days = 7) {
@@ -455,23 +461,6 @@ export async function cleanupStaleMedia(env, days = 7) {
 
   const { data } = await getDB(env).rpc("cleanup_stale_media", { p_days: days });
   return Number(data ?? 0);
-}
-
-export async function getPromptTemplateStats(env, days = 30) {
-  if (!hasDB(env)) return [];
-
-  const { data } = await getDB(env).rpc("get_prompt_template_stats", { p_days: days });
-  return (data ?? []).map((r) => ({
-    templateId: r.template_id,
-    templateName: r.template_name,
-    totalGenerated: Number(r.total_generated),
-    succeeded: Number(r.succeeded),
-    failed: Number(r.failed),
-    deadLettered: Number(r.dead_lettered),
-    totalEngagements: Number(r.total_engagements),
-    totalImpressions: Number(r.total_impressions),
-    engagementRate: Number(r.engagement_rate)
-  }));
 }
 
 // ── Event-derived state ───────────────────────────────────────────────────────
@@ -689,51 +678,105 @@ export async function getAIPromptConfig(env, key) {
 }
 
 
-// ── Prompt templates ──────────────────────────────────────────────────────────
+// ── Image prompt optimizer configs ────────────────────────────────────────────
 
-function normalizePromptTemplateRow(r) {
+function normalizeImagePromptOptimizerConfigRow(r) {
   if (!r) return null;
-  return {
+  return imagePromptOptimizerConfigWithFallback({
     id: r.id == null ? null : Number(r.id),
-    name: r.name,
-    description: r.description ?? null,
-    templateText: r.template_text ?? r.templateText ?? "",
+    key: r.key ?? DEFAULT_IMAGE_PROMPT_OPTIMIZER_KEY,
+    version: r.version ?? DEFAULT_IMAGE_PROMPT_OPTIMIZER_VERSION,
+    name: r.name ?? DEFAULT_IMAGE_PROMPT_OPTIMIZER_CONFIG.name,
+    provider: r.provider ?? DEFAULT_IMAGE_PROMPT_OPTIMIZER_CONFIG.provider,
+    model: r.model ?? DEFAULT_IMAGE_PROMPT_OPTIMIZER_CONFIG.model,
+    maxCompletionTokens: Number(r.max_completion_tokens ?? r.maxCompletionTokens ?? DEFAULT_IMAGE_PROMPT_OPTIMIZER_CONFIG.maxCompletionTokens),
+    systemPrompt: r.system_prompt ?? r.systemPrompt ?? DEFAULT_IMAGE_PROMPT_OPTIMIZER_CONFIG.systemPrompt,
+    userPromptTemplate: r.user_prompt_template ?? r.userPromptTemplate ?? DEFAULT_IMAGE_PROMPT_OPTIMIZER_CONFIG.userPromptTemplate,
+    settings: parsePromptSettings(r.settings ?? r.settings_json, DEFAULT_IMAGE_PROMPT_OPTIMIZER_CONFIG.settings),
     active: r.active ?? true,
-    modality: r.modality ?? "image",
-    provider: r.provider ?? "fal",
-    model: r.model ?? null,
-    settings: parsePromptSettings(r.settings ?? r.settings_json, {}),
-    createdBy: r.created_by ?? r.createdBy ?? null,
     createdAt: r.created_at ?? r.createdAt ?? null,
     updatedAt: r.updated_at ?? r.updatedAt ?? null
-  };
+  });
 }
 
-export async function getPromptTemplateById(env, templateId) {
-  if (!hasDB(env) || !templateId) return null;
-  const { data } = await getDB(env)
-    .from("prompt_templates")
+export async function getImagePromptOptimizerConfig(env, {
+  key = DEFAULT_IMAGE_PROMPT_OPTIMIZER_KEY,
+  version = null,
+  activeOnly = true
+} = {}) {
+  if (!hasDB(env)) {
+    return imagePromptOptimizerConfigWithFallback({
+      ...DEFAULT_IMAGE_PROMPT_OPTIMIZER_CONFIG,
+      key,
+      version: version ?? DEFAULT_IMAGE_PROMPT_OPTIMIZER_VERSION
+    });
+  }
+
+  let query = getDB(env)
+    .from("image_prompt_optimizer_configs")
     .select("*")
-    .eq("id", templateId)
+    .eq("key", key);
+
+  if (version) {
+    query = query.eq("version", version);
+  } else if (activeOnly) {
+    query = query.eq("active", true);
+  }
+
+  const { data } = await query
+    .order("updated_at", { ascending: false })
+    .limit(1)
     .maybeSingle();
-  return normalizePromptTemplateRow(data);
+
+  return normalizeImagePromptOptimizerConfigRow(data) ?? imagePromptOptimizerConfigWithFallback({
+    ...DEFAULT_IMAGE_PROMPT_OPTIMIZER_CONFIG,
+    key,
+    version: version ?? DEFAULT_IMAGE_PROMPT_OPTIMIZER_VERSION
+  });
 }
 
-export async function getRandomActivePromptTemplate(env, { modality = "image", provider = null } = {}) {
+export async function createImagePromptGeneration(env, payload) {
   if (!hasDB(env)) return null;
 
-  // Get all active templates for the modality/provider, then pick one randomly
-  let query = getDB(env)
-    .from("prompt_templates")
-    .select("*")
-    .eq("active", true)
-    .eq("modality", modality);
+  const row = {
+    story_id: payload.storyId ?? null,
+    source: payload.source,
+    optimizer_config_id: payload.optimizerConfigId ?? null,
+    optimizer_key: payload.optimizerKey,
+    optimizer_version: payload.optimizerVersion,
+    optimizer_provider: payload.optimizerProvider,
+    optimizer_model: payload.optimizerModel,
+    optimizer_input: payload.optimizerInput ?? {},
+    optimized_prompt: payload.optimizedPrompt ?? null,
+    status: payload.status,
+    latency_ms: payload.latencyMs ?? null,
+    error_text: payload.errorText ?? null
+  };
 
-  if (provider) query = query.eq("provider", provider);
+  const { data } = await getDB(env)
+    .from("image_prompt_generations")
+    .insert(row)
+    .select("id")
+    .maybeSingle();
 
-  const { data } = await query;
-  if (!data?.length) return null;
-  return normalizePromptTemplateRow(data[Math.floor(Math.random() * data.length)]);
+  return data ? Number(data.id) : null;
+}
+
+export async function getImagePromptOptimizerStats(env, days = 30) {
+  if (!hasDB(env)) return [];
+
+  const { data } = await getDB(env).rpc("get_image_prompt_optimizer_stats", { p_days: days });
+  return (data ?? []).map((r) => ({
+    optimizerConfigId: Number(r.optimizer_config_id ?? 0) || null,
+    optimizerKey: r.optimizer_key,
+    optimizerVersion: r.optimizer_version,
+    totalGenerated: Number(r.total_generated ?? 0),
+    succeeded: Number(r.succeeded ?? 0),
+    failed: Number(r.failed ?? 0),
+    totalEngagements: Number(r.total_engagements ?? 0),
+    totalImpressions: Number(r.total_impressions ?? 0),
+    engagementRate: Number(r.engagement_rate ?? 0)
+  }));
 }
 
 // ── Prompt run events ─────────────────────────────────────────────────────────
@@ -744,15 +787,16 @@ export async function createPromptRunEvent(env, payload) {
     const cost = serializeCostFields(payload.cost);
     await legacyDB.prepare(`
       INSERT INTO prompt_run_events
-        (source, prompt_kind, prompt_key, prompt_template_id, provider, model, modality, status, latency_ms, cache_hit,
+        (source, prompt_kind, prompt_key, prompt_version, optimizer_config_id, provider, model, modality, status, latency_ms, cache_hit,
          request_excerpt, response_excerpt, artifact_url, error_text, story_id, cost_usd, cost_currency, cost_estimated,
          pricing_source, cost_details_json, created_at)
-      VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21)
+      VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22)
     `).bind(
       payload.source,
       payload.promptKind,
       payload.promptKey,
-      payload.promptTemplateId ?? null,
+      payload.promptVersion ?? null,
+      payload.optimizerConfigId ?? null,
       payload.provider,
       payload.model ?? null,
       payload.modality,
@@ -783,7 +827,8 @@ export async function createPromptRunEvent(env, payload) {
       source: payload.source,
       prompt_kind: payload.promptKind,
       prompt_key: payload.promptKey,
-      prompt_template_id: payload.promptTemplateId ?? null,
+      prompt_version: payload.promptVersion ?? null,
+      optimizer_config_id: payload.optimizerConfigId ?? null,
       provider: payload.provider,
       model: payload.model ?? null,
       modality: payload.modality,
@@ -814,9 +859,7 @@ export async function updatePublishedFeedEntryMediaProjection(env, storyId, fiel
       media_model: fields.mediaModel ?? null,
       generation_status: fields.generationStatus ?? null,
       generation_latency_ms: fields.generationLatencyMs ?? null,
-      generation_cost_usd: fields.generationCostUsd ?? null,
-      prompt_template_id: fields.promptTemplateId ?? null,
-      prompt_template_name: fields.promptTemplateName ?? null
+      generation_cost_usd: fields.generationCostUsd ?? null
     })
     .eq("story_id", storyId);
 }

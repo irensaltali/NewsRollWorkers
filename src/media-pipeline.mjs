@@ -3,9 +3,10 @@ import {
   storeHeadline,
   storeStorySummary,
   createPromptRunEvent,
+  createImagePromptGeneration,
   upsertMedia,
   updatePublishedFeedEntryMediaProjection,
-  getRandomActivePromptTemplate,
+  getImagePromptOptimizerConfig,
   reserveMediaQueueSlot,
   releaseMediaQueueSlot,
   getRSSSourceIdByStoryId,
@@ -29,8 +30,12 @@ import * as log from "./log.mjs";
 import * as shaped from "./shaped.mjs";
 import { readableUrlFor } from "./visual-feed.mjs";
 import { buildFalImageRequest, generateImageWithProvider } from "./media-generation.mjs";
-import { buildPromptInput, clipPromptText, mediaTemplateWithFallback } from "./prompt-config.mjs";
 import { crawlWithFallback, submitCrawlJobWithTracking, checkCrawlJobWithFallback } from "./crawl-provider.mjs";
+import {
+  DEFAULT_IMAGE_PROMPT_OPTIMIZER_KEY,
+  buildImagePromptOptimizerInput,
+  generateOptimizedImagePrompt
+} from "./image-prompt-optimizer.mjs";
 
 export { buildFalImageRequest } from "./media-generation.mjs";
 
@@ -148,11 +153,13 @@ export async function ingestStories(env, category, options = {}) {
   return ingestCategory(env, category, options);
 }
 
-function generatePrompt(template, payload) {
-  const normalized = mediaTemplateWithFallback(template, "image");
-  return buildPromptInput(normalized.templateText, {
+function resolveOptimizerInput(payload) {
+  return buildImagePromptOptimizerInput({
     title: payload.title,
-    sourceText: clipPromptText(payload.extractedText, 1200)
+    headline: payload.headline,
+    summary: payload.summary,
+    topics: payload.topics,
+    language: payload.language
   });
 }
 
@@ -184,7 +191,6 @@ export async function processMediaMessage(batch, env, ctx = null) {
         failureReason: `Fal daily limit reached (${falDailyCount}/${falLimit})`,
         attempts: (message.attempts ?? 0) + 1,
         updatedAt: new Date().toISOString(),
-        promptTemplateId: null,
         imagePrompt: null
       });
       message.ack();
@@ -217,7 +223,6 @@ export async function processMediaMessage(batch, env, ctx = null) {
             failureReason: `Crawl job did not complete after ${MAX_CRAWL_WAITS} waits`,
             attempts: attempt,
             updatedAt: new Date().toISOString(),
-            promptTemplateId: null,
             imagePrompt: null
           });
           message.ack();
@@ -276,7 +281,6 @@ export async function processMediaMessage(batch, env, ctx = null) {
         failureReason: `Exceeded max retries (${maxRetries})`,
         attempts: attempt,
         updatedAt: new Date().toISOString(),
-        promptTemplateId: null,
         imagePrompt: null
       });
       message.ack();
@@ -316,7 +320,6 @@ export async function processMediaMessage(batch, env, ctx = null) {
             failureReason: `Crawl blocked: ${resolvedArticle.crawlError}`,
             attempts: attempt + 1,
             updatedAt: new Date().toISOString(),
-            promptTemplateId: null,
             imagePrompt: null
           });
           const sourceId = await getRSSSourceIdByStoryId(env, storyId);
@@ -375,7 +378,6 @@ export async function processMediaMessage(batch, env, ctx = null) {
           failureReason: `Missing crawl metadata: ${crawlError}`,
           attempts: attempt + 1,
           updatedAt: new Date().toISOString(),
-          promptTemplateId: null,
           imagePrompt: null
         });
         message.ack();
@@ -401,11 +403,10 @@ export async function processMediaMessage(batch, env, ctx = null) {
         log.warn({ event: "crawl_fail", storyId, error: "empty_resolved_article_text" });
       }
 
-      const contentHash = await hashText(extractedText);
-
       const headline = crawlMetadata?.headline ?? null;
       const summary = crawlMetadata?.summary ?? null;
       const topics = Array.isArray(crawlMetadata?.topics) ? crawlMetadata.topics : null;
+      const language = crawlMetadata?.language ?? "en";
 
       if (headline || summary || topics) {
         try {
@@ -439,11 +440,57 @@ export async function processMediaMessage(batch, env, ctx = null) {
         }
       }
 
-      const template = mediaTemplateWithFallback(
-        await getRandomActivePromptTemplate(env, { modality: "image" }),
-        "image"
-      );
-      const imagePrompt = generatePrompt(template, { title, extractedText });
+      const optimizerConfig = await getImagePromptOptimizerConfig(env, {
+        key: DEFAULT_IMAGE_PROMPT_OPTIMIZER_KEY
+      });
+      const optimizerInput = resolveOptimizerInput({
+        title,
+        headline,
+        summary,
+        topics,
+        language
+      });
+      const optimization = await generateOptimizedImagePrompt(env, optimizerInput, {
+        config: optimizerConfig,
+        storyId
+      });
+      const imagePromptGenerationId = await createImagePromptGeneration(env, {
+        storyId: body.storyId,
+        source: "media_pipeline",
+        optimizerConfigId: optimizerConfig.id ?? null,
+        optimizerKey: optimizerConfig.key,
+        optimizerVersion: optimizerConfig.version,
+        optimizerProvider: optimization.provider ?? optimizerConfig.provider,
+        optimizerModel: optimization.model ?? optimizerConfig.model,
+        optimizerInput,
+        optimizedPrompt: optimization.optimizedPrompt,
+        status: optimization.status,
+        latencyMs: optimization.latencyMs,
+        errorText: optimization.errorText
+      });
+      await createPromptRunEvent(env, {
+        source: "media_pipeline_optimizer",
+        promptKind: "media",
+        promptKey: optimizerConfig.key,
+        promptVersion: optimizerConfig.version,
+        optimizerConfigId: optimizerConfig.id ?? null,
+        provider: optimization.provider ?? optimizerConfig.provider,
+        model: optimization.model ?? optimizerConfig.model,
+        modality: "text",
+        status: optimization.status,
+        latencyMs: optimization.latencyMs ?? null,
+        requestExcerpt: optimization.userPrompt?.slice(0, 500) ?? null,
+        responseExcerpt: optimization.optimizedPrompt?.slice(0, 500) ?? null,
+        errorText: optimization.errorText ?? null,
+        storyId: body.storyId
+      });
+
+      if (optimization.status !== "ready" || !optimization.optimizedPrompt) {
+        throw new Error(optimization.errorText ?? "Image prompt optimization failed");
+      }
+
+      const imagePrompt = optimization.optimizedPrompt;
+      const contentHash = await hashText(extractedText);
       const generationStart = Date.now();
 
       // Re-check fal limit per message (count may have incremented within this batch)
@@ -459,17 +506,18 @@ export async function processMediaMessage(batch, env, ctx = null) {
           failureReason: `Fal daily limit reached (${falDailyCount}/${falLimit})`,
           attempts: attempt + 1,
           updatedAt: new Date().toISOString(),
-          promptTemplateId: template?.id ?? null,
-          imagePrompt
+          imagePrompt,
+          imagePromptGenerationId,
+          optimizerConfigId: optimizerConfig.id ?? null
         });
         message.ack();
         continue;
       }
 
       const result = await generateImageWithProvider(env, {
-        provider: template.provider,
-        model: template.model,
-        settings: template.settings,
+        provider: "fal",
+        model: null,
+        settings: null,
         prompt: imagePrompt,
         storyId
       });
@@ -506,21 +554,23 @@ export async function processMediaMessage(batch, env, ctx = null) {
         failureReason: result.errorText ?? null,
         attempts: attempt + 1,
         updatedAt: now,
-        promptTemplateId: template?.id ?? null,
         imagePrompt,
+        imagePromptGenerationId,
+        optimizerConfigId: optimizerConfig.id ?? null,
         mediaType: "image",
-        provider: result.provider ?? template.provider ?? "fal",
-        model: result.model ?? template.model ?? null,
+        provider: result.provider ?? "fal",
+        model: result.model ?? null,
         generationLatencyMs: generationDurationMs
       });
 
       await createPromptRunEvent(env, {
         source: "media_pipeline",
         promptKind: "media",
-        promptKey: template?.name ?? "image_default",
-        promptTemplateId: template?.id ?? null,
-        provider: result.provider ?? template.provider ?? "fal",
-        model: result.model ?? template.model ?? null,
+        promptKey: optimizerConfig.key,
+        promptVersion: optimizerConfig.version,
+        optimizerConfigId: optimizerConfig.id ?? null,
+        provider: result.provider ?? "fal",
+        model: result.model ?? null,
         modality: "image",
         status: result.status === "ready" ? "ready" : "failed",
         latencyMs: generationDurationMs,
@@ -533,13 +583,11 @@ export async function processMediaMessage(batch, env, ctx = null) {
 
       await updatePublishedFeedEntryMediaProjection(env, body.storyId, {
         mediaType: "image",
-        mediaProvider: result.provider ?? template.provider ?? "fal",
-        mediaModel: result.model ?? template.model ?? null,
+        mediaProvider: result.provider ?? "fal",
+        mediaModel: result.model ?? null,
         generationStatus: result.status,
         generationLatencyMs: generationDurationMs,
-        generationCostUsd: null,
-        promptTemplateId: template?.id ?? null,
-        promptTemplateName: template?.name ?? null
+        generationCostUsd: null
       });
 
       const readyForPublication =
@@ -575,9 +623,9 @@ export async function processMediaMessage(batch, env, ctx = null) {
             publishedAt: now,
             mediaUrl,
             mediaType: "image",
-            mediaProvider: result.provider ?? template.provider ?? "fal",
-            mediaModel: result.model ?? template.model ?? null,
-            promptTemplateId: template?.id ?? null
+            mediaProvider: result.provider ?? "fal",
+            mediaModel: result.model ?? null,
+            optimizerConfigId: optimizerConfig.id ?? null
           });
           if (ctx) {
             ctx.waitUntil(shapedPromise);
@@ -598,7 +646,8 @@ export async function processMediaMessage(batch, env, ctx = null) {
         storyId,
         status: result.status,
         sourceKind,
-        template: template?.name ?? "default",
+        optimizerKey: optimizerConfig.key,
+        optimizerVersion: optimizerConfig.version,
         durationMs: Date.now() - msgStart
       });
       message.ack();
