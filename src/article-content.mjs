@@ -15,7 +15,7 @@ export async function resolveArticleUrl(_env, _storyId, { url = null } = {}) {
   return normalizedUrl || null;
 }
 
-export async function resolveArticleContent(env, storyId, { title = "", text = "", url = null } = {}, { allowCrawl = true, recrawl = false } = {}) {
+export async function resolveArticleContent(env, storyId, { title = "", text = "", url = null } = {}, { allowCrawl = true, recrawl = false, persistCrawlResult = true } = {}) {
   const numericStoryId = Number(storyId);
   const hasStoryId = Number.isInteger(numericStoryId) && numericStoryId > 0;
   const normalizedTitle = normalizeText(title);
@@ -61,7 +61,7 @@ export async function resolveArticleContent(env, storyId, { title = "", text = "
     const crawlResult = await crawlWithFallback(env, resolvedUrl, { storyId: numericStoryId, recrawl });
     const crawledText = normalizeText(crawlResult.markdown);
     if (crawlResult.success && crawledText) {
-      if (hasStoryId) {
+      if (hasStoryId && persistCrawlResult) {
         await storeReadableContent(env, {
           storyId: numericStoryId,
           sourceKind: "crawl",

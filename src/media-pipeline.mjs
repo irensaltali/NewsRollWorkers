@@ -32,7 +32,6 @@ import { readableUrlFor } from "./visual-feed.mjs";
 import { buildFalImageRequest, generateImageWithProvider } from "./media-generation.mjs";
 import { crawlWithFallback, submitCrawlJobWithTracking, checkCrawlJobWithFallback } from "./crawl-provider.mjs";
 import {
-  DEFAULT_IMAGE_PROMPT_OPTIMIZER_KEY,
   buildImagePromptOptimizerInput,
   generateOptimizedImagePrompt
 } from "./image-prompt-optimizer.mjs";
@@ -441,7 +440,8 @@ export async function processMediaMessage(batch, env, ctx = null) {
       }
 
       const optimizerConfig = await getImagePromptOptimizerConfig(env, {
-        key: DEFAULT_IMAGE_PROMPT_OPTIMIZER_KEY
+        randomActive: true,
+        key: null
       });
       const optimizerInput = resolveOptimizerInput({
         title,

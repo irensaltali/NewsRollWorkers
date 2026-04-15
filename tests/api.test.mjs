@@ -257,6 +257,553 @@ test("admin test prompt can resolve crawl content without generating an image", 
   assert.equal(payload.approval, null);
 });
 
+test("admin media prompt dryRun returns a prompt without saving prompt artifacts", async (t) => {
+  const writes = {
+    promptGenerations: [],
+    promptRunEvents: []
+  };
+
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (input, init = {}) => {
+    const url = String(input);
+    const method = init.method ?? "GET";
+
+    if (url === "https://api.openai.com/v1/chat/completions") {
+      return Response.json({
+        choices: [
+          {
+            message: {
+              content: "Dry-run optimized editorial image prompt."
+            }
+          }
+        ]
+      });
+    }
+
+    if (url.endsWith("/browser-rendering/crawl")) {
+      return Response.json({
+        success: true,
+        result: "job-admin-dry-run-1"
+      });
+    }
+
+    if (url.includes("/browser-rendering/crawl/job-admin-dry-run-1?limit=1")) {
+      return Response.json({
+        success: true,
+        result: {
+          id: "job-admin-dry-run-1",
+          status: "completed",
+          records: [
+            {
+              url: "https://example.com/dry-run-article",
+              status: "completed",
+              markdown: "# Dry Run Story\n\nPrompt-only crawl body",
+              json: {
+                title: "Dry Run Admin Title",
+                headline: "Dry Run Admin Headline",
+                language: "en",
+                summary: "Dry Run Admin Summary",
+                topics: ["testing", "dry-run"]
+              },
+              metadata: { status: 200 }
+            }
+          ]
+        }
+      });
+    }
+
+    if (url.includes("/rest/v1/image_prompt_optimizer_configs") && method === "GET") {
+      return Response.json([{
+        id: 91,
+        key: "news_image_prompt_optimizer",
+        version: "doc_v1",
+        name: "News Image Prompt Optimizer",
+        provider: "openai",
+        model: "gpt-5.4-mini-2026-03-17",
+        max_completion_tokens: 500,
+        system_prompt: "system",
+        user_prompt_template: "template",
+        settings: {},
+        active: true
+      }]);
+    }
+
+    if (url.includes("/rest/v1/image_prompt_generations") && method === "POST") {
+      writes.promptGenerations.push(JSON.parse(init.body));
+      return Response.json([{ id: 501 }]);
+    }
+
+    if (url.includes("/rest/v1/prompt_run_events") && method === "POST") {
+      writes.promptRunEvents.push(JSON.parse(init.body));
+      return Response.json([{ id: "prompt-run-1" }]);
+    }
+
+    throw new Error(`Unexpected fetch call: ${url} ${method}`);
+  };
+
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  const response = await worker.fetch(new Request("https://example.com/admin/media/prompt", {
+    method: "POST",
+    headers: {
+      authorization: "Bearer admin-secret",
+      "content-type": "application/json"
+    },
+    body: JSON.stringify({
+      url: "https://example.com/dry-run-article",
+      dryRun: true
+    })
+  }), {
+    ...env,
+    ADMIN_API_KEY: "admin-secret",
+    OPENAI_API_KEY: "openai-test-key",
+    SUPABASE_URL: "https://example.supabase.co",
+    SUPABASE_SECRET_KEY: "service-role-test",
+    CLOUDFLARE_ACCOUNT_ID: "account-123",
+    CLOUDFLARE_API_TOKEN: "token-123"
+  });
+
+  assert.equal(response.status, 200);
+  const payload = await response.json();
+  assert.equal(payload.status, "resolved");
+  assert.equal(payload.dryRun, true);
+  assert.equal(payload.resolvedPrompt, "Dry-run optimized editorial image prompt.");
+  assert.equal(payload.promptGenerationId, null);
+  assert.equal(payload.optimizerPromptRunEventId, null);
+  assert.equal(writes.promptGenerations.length, 0);
+  assert.equal(writes.promptRunEvents.length, 0);
+});
+
+test("admin media prompt uses optimizerConfigId when provided", async (t) => {
+  const originalFetch = globalThis.fetch;
+
+  globalThis.fetch = async (input, init = {}) => {
+    const url = String(input);
+    const method = init.method ?? "GET";
+
+    if (url === "https://api.openai.com/v1/chat/completions") {
+      return Response.json({
+        choices: [
+          {
+            message: {
+              content: "Prompt from explicit optimizer config."
+            }
+          }
+        ]
+      });
+    }
+
+    if (url.includes("/rest/v1/story_content") && method === "GET" && url.includes("select=extracted_text%2Cai_headline")) {
+      return Response.json({
+        extracted_text: "Stored text",
+        ai_headline: null
+      });
+    }
+
+    if (url.includes("/rest/v1/story_content") && method === "GET" && url.includes("select=story_id%2Csource_url")) {
+      return Response.json([]);
+    }
+
+    if (url.includes("/rest/v1/published_feed_entries") && method === "GET") {
+      return Response.json([]);
+    }
+
+    if (url.includes("/rest/v1/story_media") && method === "GET") {
+      return Response.json([]);
+    }
+
+    if (url.includes("/rest/v1/image_prompt_optimizer_configs") && method === "GET") {
+      return Response.json({
+        id: 222,
+        key: "campaign_optimizer",
+        version: "v3",
+        name: "Campaign Optimizer",
+        provider: "openai",
+        model: "gpt-5.4-mini-2026-03-17",
+        max_completion_tokens: 500,
+        system_prompt: "system",
+        user_prompt_template: "template",
+        settings: {},
+        active: true
+      });
+    }
+
+    if (url.includes("/rest/v1/image_prompt_generations") && method === "POST") {
+      return Response.json([{ id: 501 }]);
+    }
+
+    throw new Error(`Unexpected fetch call: ${url} ${method}`);
+  };
+
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  const response = await worker.fetch(new Request("https://example.com/admin/media/prompt", {
+    method: "POST",
+    headers: {
+      authorization: "Bearer admin-secret",
+      "content-type": "application/json"
+    },
+    body: JSON.stringify({
+      storyId: 12345,
+      optimizerConfigId: 222,
+      logPromptRun: false
+    })
+  }), {
+    ...env,
+    ADMIN_API_KEY: "admin-secret",
+    OPENAI_API_KEY: "openai-test-key",
+    SUPABASE_URL: "https://example.supabase.co",
+    SUPABASE_SECRET_KEY: "service-role-test"
+  });
+
+  assert.equal(response.status, 200);
+  const payload = await response.json();
+  assert.equal(payload.optimizerUsed.id, 222);
+  assert.equal(payload.optimizerUsed.key, "campaign_optimizer");
+  assert.equal(payload.resolvedPrompt, "Prompt from explicit optimizer config.");
+});
+
+test("admin media generate can apply to an existing story in one request using stored content", async (t) => {
+  const originalFetch = globalThis.fetch;
+  const bucket = createMemoryBucket();
+  const writes = {
+    storyMedia: [],
+    storyContent: []
+  };
+  const publishedEntry = {
+    story_id: 12345,
+    publish_sequence: 88,
+    source_endpoint: "tech",
+    published_at: "2026-04-08T10:00:00.000Z",
+    media_status: "ready",
+    headline: "Existing headline"
+  };
+
+  globalThis.fetch = async (input, init = {}) => {
+    const url = String(input);
+    const method = init.method ?? "GET";
+
+    if (url.startsWith("https://fal.run/")) {
+      return new Response(JSON.stringify({
+        images: [{ url: "https://assets.example.com/generated-apply.webp" }],
+        request_id: "req-admin-apply-1"
+      }), {
+        status: 200,
+        headers: {
+          "content-type": "application/json",
+          "x-fal-billable-units": "1"
+        }
+      });
+    }
+
+    if (url === "https://assets.example.com/generated-apply.webp") {
+      return new Response(Uint8Array.from([1, 2, 3, 4]), {
+        status: 200,
+        headers: { "content-type": "image/webp" }
+      });
+    }
+
+    if (url === "https://api.openai.com/v1/chat/completions") {
+      return Response.json({
+        choices: [
+          {
+            message: {
+              content: "Optimized editorial prompt from stored content."
+            }
+          }
+        ]
+      });
+    }
+
+    if (url.includes("/rest/v1/story_content")) {
+      if (method === "GET") {
+        if (url.includes("select=story_id%2Csource_url")) {
+          return Response.json([]);
+        }
+        return Response.json({
+          extracted_text: "Stored crawl text from db",
+          ai_headline: null
+        });
+      }
+      if (method === "POST") {
+        writes.storyContent.push(JSON.parse(init.body));
+        return Response.json([]);
+      }
+    }
+
+    if (url.includes("/rest/v1/published_feed_entries")) {
+      if (method === "GET") {
+        return Response.json([publishedEntry]);
+      }
+      if (method === "PATCH") {
+        Object.assign(publishedEntry, JSON.parse(init.body));
+        return Response.json([publishedEntry]);
+      }
+    }
+
+    if (url.includes("/rest/v1/image_prompt_optimizer_configs") && method === "GET") {
+      return Response.json([{
+        id: 91,
+        key: "news_image_prompt_optimizer",
+        version: "doc_v1",
+        name: "News Image Prompt Optimizer",
+        provider: "openai",
+        model: "gpt-5.4-mini-2026-03-17",
+        max_completion_tokens: 500,
+        system_prompt: "system",
+        user_prompt_template: "template",
+        settings: {},
+        active: true
+      }]);
+    }
+
+    if (url.includes("/rest/v1/image_prompt_generations") && method === "POST") {
+      return Response.json([{ id: 501 }]);
+    }
+
+    if (url.includes("/rest/v1/story_media") && method === "POST") {
+      writes.storyMedia.push(JSON.parse(init.body));
+      return Response.json([]);
+    }
+
+    throw new Error(`Unexpected fetch call: ${url} ${method}`);
+  };
+
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  const response = await worker.fetch(new Request("https://example.com/admin/media/generate", {
+    method: "POST",
+    headers: {
+      authorization: "Bearer admin-secret",
+      "content-type": "application/json"
+    },
+    body: JSON.stringify({
+      storyId: 12345,
+      applyToStory: true,
+      logPromptRun: false
+    })
+  }), {
+    ...env,
+    ADMIN_API_KEY: "admin-secret",
+    FAL_API_KEY: "fal-test-key",
+    OPENAI_API_KEY: "openai-test-key",
+    SUPABASE_URL: "https://example.supabase.co",
+    SUPABASE_SECRET_KEY: "service-role-test",
+    PUBLIC_MEDIA_BASE_URL: "https://media.example.com",
+    MEDIA_BUCKET: bucket,
+    VISUAL_FEED_CACHE: createKvNamespace()
+  });
+
+  assert.equal(response.status, 200);
+  const payload = await response.json();
+  assert.equal(payload.applied, true);
+  assert.equal(payload.appliedResult.mediaUrl, writes.storyMedia[0].media_url);
+  assert.equal(payload.appliedResult.summary, null);
+  assert.equal(writes.storyMedia.length, 1);
+});
+
+test("admin media generate can recrawl and fully replace stored story content before applying", async (t) => {
+  const originalFetch = globalThis.fetch;
+  const originalSetTimeout = globalThis.setTimeout;
+  const bucket = createMemoryBucket();
+  const writes = {
+    storyMedia: [],
+    storyContent: []
+  };
+  const publishedEntry = {
+    story_id: 12345,
+    publish_sequence: 88,
+    source_endpoint: "tech",
+    published_at: "2026-04-08T10:00:00.000Z",
+    media_status: "ready",
+    headline: "Old headline"
+  };
+
+  globalThis.setTimeout = (fn, _ms, ...args) => {
+    fn(...args);
+    return 0;
+  };
+
+  globalThis.fetch = async (input, init = {}) => {
+    const url = String(input);
+    const method = init.method ?? "GET";
+
+    if (url.startsWith("https://fal.run/")) {
+      return new Response(JSON.stringify({
+        images: [{ url: "https://assets.example.com/generated-recrawl.webp" }],
+        request_id: "req-admin-recrawl-1"
+      }), {
+        status: 200,
+        headers: {
+          "content-type": "application/json",
+          "x-fal-billable-units": "1"
+        }
+      });
+    }
+
+    if (url === "https://assets.example.com/generated-recrawl.webp") {
+      return new Response(Uint8Array.from([5, 6, 7, 8]), {
+        status: 200,
+        headers: { "content-type": "image/webp" }
+      });
+    }
+
+    if (url === "https://api.openai.com/v1/chat/completions") {
+      return Response.json({
+        choices: [
+          {
+            message: {
+              content: "Optimized editorial prompt from recrawl."
+            }
+          }
+        ]
+      });
+    }
+
+    if (url.endsWith("/browser-rendering/crawl")) {
+      return Response.json({
+        success: true,
+        result: "job-admin-recrawl-1"
+      });
+    }
+
+    if (url.includes("/browser-rendering/crawl/job-admin-recrawl-1?limit=1")) {
+      return Response.json({
+        success: true,
+        result: {
+          id: "job-admin-recrawl-1",
+          status: "completed",
+          records: [
+            {
+              url: "https://example.com/recrawl-story",
+              status: "completed",
+              markdown: "# Recrawled Story\n\nFresh crawl body",
+              json: {
+                title: "Recrawled title",
+                headline: "Recrawled headline",
+                language: "en",
+                summary: "Recrawled summary",
+                topics: ["recrawl", "refresh"]
+              },
+              metadata: { status: 200 }
+            }
+          ]
+        }
+      });
+    }
+
+    if (url.includes("/rest/v1/story_content")) {
+      if (method === "GET") {
+        return Response.json([{
+          story_id: 12345,
+          source_url: "https://example.com/old-story"
+        }]);
+      }
+      if (method === "POST") {
+        writes.storyContent.push(JSON.parse(init.body));
+        return Response.json([]);
+      }
+    }
+
+    if (url.includes("/rest/v1/rss_items") && method === "GET") {
+      return Response.json({
+        url: "https://example.com/recrawl-story",
+        canonical_url: "https://example.com/recrawl-story",
+        rss_sources: {
+          feed_url: "https://example.com/feed.xml",
+          tier: 1
+        }
+      });
+    }
+
+    if (url.includes("/rest/v1/published_feed_entries")) {
+      if (method === "GET") {
+        return Response.json([publishedEntry]);
+      }
+      if (method === "PATCH") {
+        Object.assign(publishedEntry, JSON.parse(init.body));
+        return Response.json([publishedEntry]);
+      }
+    }
+
+    if (url.includes("/rest/v1/image_prompt_optimizer_configs") && method === "GET") {
+      return Response.json([{
+        id: 91,
+        key: "news_image_prompt_optimizer",
+        version: "doc_v1",
+        name: "News Image Prompt Optimizer",
+        provider: "openai",
+        model: "gpt-5.4-mini-2026-03-17",
+        max_completion_tokens: 500,
+        system_prompt: "system",
+        user_prompt_template: "template",
+        settings: {},
+        active: true
+      }]);
+    }
+
+    if (url.includes("/rest/v1/image_prompt_generations") && method === "POST") {
+      return Response.json([{ id: 501 }]);
+    }
+
+    if (url.includes("/rest/v1/story_media") && method === "POST") {
+      writes.storyMedia.push(JSON.parse(init.body));
+      return Response.json([]);
+    }
+
+    throw new Error(`Unexpected fetch call: ${url} ${method}`);
+  };
+
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+    globalThis.setTimeout = originalSetTimeout;
+  });
+
+  const response = await worker.fetch(new Request("https://example.com/admin/media/generate", {
+    method: "POST",
+    headers: {
+      authorization: "Bearer admin-secret",
+      "content-type": "application/json"
+    },
+    body: JSON.stringify({
+      storyId: 12345,
+      recrawl: true,
+      applyToStory: true,
+      replaceStoryContent: true,
+      logPromptRun: false
+    })
+  }), {
+    ...env,
+    ADMIN_API_KEY: "admin-secret",
+    FAL_API_KEY: "fal-test-key",
+    OPENAI_API_KEY: "openai-test-key",
+    SUPABASE_URL: "https://example.supabase.co",
+    SUPABASE_SECRET_KEY: "service-role-test",
+    CLOUDFLARE_ACCOUNT_ID: "account-123",
+    CLOUDFLARE_API_TOKEN: "token-123",
+    PUBLIC_MEDIA_BASE_URL: "https://media.example.com",
+    MEDIA_BUCKET: bucket,
+    VISUAL_FEED_CACHE: createKvNamespace()
+  });
+
+  assert.equal(response.status, 200);
+  const payload = await response.json();
+  assert.equal(payload.applied, true);
+  assert.equal(payload.replacedStoryContent, true);
+  assert.equal(writes.storyMedia.length, 1);
+  assert.equal(writes.storyContent.length, 1);
+  assert.equal(writes.storyContent[0].source_kind, "crawl");
+  assert.equal(writes.storyContent[0].summary, "Recrawled summary");
+  assert.equal(writes.storyContent[0].ai_headline, "Recrawled headline");
+  assert.equal(writes.storyContent[0].explanation, null);
+});
+
 test("admin test prompt can save a preview and apply it to overwrite an existing item", async (t) => {
   const originalFetch = globalThis.fetch;
   const bucket = createMemoryBucket();
@@ -437,7 +984,7 @@ test("admin test prompt can save a preview and apply it to overwrite an existing
   assert.equal(applyPayload.applied, true);
   assert.equal(applyPayload.storyId, 12345);
   assert.match(applyPayload.mediaKey, /^stories\/12345-[a-f0-9]+\.webp$/);
-  assert.equal(applyPayload.mediaUrl, publishedEntry.media_url);
+  assert.equal(applyPayload.mediaUrl, writes.storyMedia[0].media_url);
   assert.equal(publishedEntry.media_status, "ready");
   assert.equal(writes.storyMedia.length, 1);
   assert.equal(writes.storyMedia[0].story_id, 12345);
@@ -757,6 +1304,202 @@ test("POST /admin/media/crawl requires url", async () => {
   assert.equal(res.status, 400);
   const payload = await res.json();
   assert.ok(payload.error.includes("url"));
+});
+
+test("visual feed prefers story_media media_url over stale published entry media_url", async (t) => {
+  const originalFetch = globalThis.fetch;
+
+  globalThis.fetch = async (input, init = {}) => {
+    const url = String(input);
+    const method = init.method ?? "GET";
+
+    if (url.includes("/rpc/get_visual_feed") && method === "POST") {
+      return Response.json([{
+        story_id: 12345,
+        publish_sequence: 77,
+        source_endpoint: "general",
+        published_at: "2026-04-02T12:44:40.754+00:00",
+        media_url: "https://api-staging.newsroll.app/media/stories/bad.webp",
+        media_status: "ready",
+        headline: null
+      }]);
+    }
+
+    if (url.includes("/rest/v1/story_content") && method === "GET") {
+      return Response.json([{
+        story_id: 12345,
+        source_url: "https://example.com/story"
+      }]);
+    }
+
+    if (url.includes("/rest/v1/story_media") && method === "GET") {
+      return Response.json([{
+        story_id: 12345,
+        media_url: "https://media-staging.newsroll.app/stories/good.webp"
+      }]);
+    }
+
+    throw new Error(`Unexpected fetch call: ${url} ${method}`);
+  };
+
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  const res = await worker.fetch(new Request("https://example.com/v1/visual-feed?limit=1"), {
+    ...env,
+    SUPABASE_URL: "https://example.supabase.co",
+    SUPABASE_SECRET_KEY: "service-role-test"
+  });
+
+  assert.equal(res.status, 200);
+  const payload = await res.json();
+  assert.equal(payload.items[0].mediaUrl, "https://media-staging.newsroll.app/stories/good.webp");
+});
+
+test("GET /admin/stories/:storyId returns current story data", async (t) => {
+  const originalFetch = globalThis.fetch;
+
+  globalThis.fetch = async (input, init = {}) => {
+    const url = String(input);
+    const method = init.method ?? "GET";
+
+    if (url.includes("/rest/v1/published_feed_entries") && method === "GET") {
+      return Response.json([{
+        story_id: 12345,
+        publish_sequence: 77,
+        source_endpoint: "tech",
+        published_at: "2026-04-15T09:00:00Z",
+        media_url: "https://api-staging.newsroll.app/media/stories/stale.webp",
+        media_status: "ready",
+        headline: "Published headline",
+        media_type: "image",
+        media_provider: "fal",
+        media_model: "fal-ai/flux-2/turbo",
+        generation_status: "ready",
+        generation_latency_ms: 2345,
+        generation_cost_usd: 0.02,
+        engagement_count: 15,
+        impression_count: 120
+      }]);
+    }
+
+    if (url.includes("/rest/v1/story_content") && method === "GET") {
+      return Response.json({
+        story_id: 12345,
+        source_kind: "crawl",
+        extracted_text: "Current extracted story text",
+        ai_headline: "AI headline",
+        source_url: "https://example.com/story",
+        feed_url: "https://example.com/feed.xml",
+        summary: "Current summary",
+        explanation: "Current explanation",
+        explanation_json: { title: "Explain title", sections: [] },
+        topics: ["ai", "media"],
+        updated_at: "2026-04-15T09:05:00Z"
+      });
+    }
+
+    if (url.includes("/rest/v1/story_media") && method === "GET") {
+      return Response.json({
+        story_id: 12345,
+        status: "ready",
+        fal_request_id: "fal-request-1",
+        media_key: "stories/12345-hash.webp",
+        media_url: "https://media.example.com/story.webp",
+        failure_reason: null,
+        attempts: 1,
+        image_prompt: "Current image prompt",
+        image_prompt_generation_id: 91,
+        optimizer_config_id: 7,
+        media_type: "image",
+        provider: "fal",
+        model: "fal-ai/flux-2/turbo",
+        generation_latency_ms: 2345,
+        updated_at: "2026-04-15T09:06:00Z"
+      });
+    }
+
+    if (url.includes("/rest/v1/rss_items") && method === "GET") {
+      return Response.json({
+        url: "https://example.com/story",
+        canonical_url: "https://example.com/story-canonical",
+        rss_sources: {
+          feed_url: "https://example.com/feed.xml",
+          tier: 1
+        }
+      });
+    }
+
+    throw new Error(`Unexpected fetch call: ${url} ${method}`);
+  };
+
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  const res = await worker.fetch(new Request("https://example.com/admin/stories/12345", {
+    headers: { authorization: "Bearer admin-secret" }
+  }), {
+    ...env,
+    ADMIN_API_KEY: "admin-secret",
+    SUPABASE_URL: "https://example.supabase.co",
+    SUPABASE_SECRET_KEY: "service-role-test"
+  });
+
+  assert.equal(res.status, 200);
+  const payload = await res.json();
+  assert.equal(payload.storyId, 12345);
+  assert.equal(payload.publishedEntry.publishSequence, 77);
+  assert.equal(Object.hasOwn(payload.publishedEntry, "mediaUrl"), false);
+  assert.equal(payload.storyContent.extractedText, "Current extracted story text");
+  assert.equal(payload.storyMedia.imagePrompt, "Current image prompt");
+  assert.equal(payload.storyMedia.mediaUrl, "https://media.example.com/story.webp");
+  assert.equal(payload.sourceMetadata.canonicalUrl, "https://example.com/story-canonical");
+});
+
+test("GET /admin/stories/:storyId returns 404 when story data is missing", async (t) => {
+  const originalFetch = globalThis.fetch;
+
+  globalThis.fetch = async (input, init = {}) => {
+    const url = String(input);
+    const method = init.method ?? "GET";
+
+    if (url.includes("/rest/v1/published_feed_entries") && method === "GET") {
+      return Response.json([]);
+    }
+
+    if (url.includes("/rest/v1/story_content") && method === "GET") {
+      return Response.json(null);
+    }
+
+    if (url.includes("/rest/v1/story_media") && method === "GET") {
+      return Response.json(null);
+    }
+
+    if (url.includes("/rest/v1/rss_items") && method === "GET") {
+      return Response.json(null);
+    }
+
+    throw new Error(`Unexpected fetch call: ${url} ${method}`);
+  };
+
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  const res = await worker.fetch(new Request("https://example.com/admin/stories/98765", {
+    headers: { authorization: "Bearer admin-secret" }
+  }), {
+    ...env,
+    ADMIN_API_KEY: "admin-secret",
+    SUPABASE_URL: "https://example.supabase.co",
+    SUPABASE_SECRET_KEY: "service-role-test"
+  });
+
+  assert.equal(res.status, 404);
+  const payload = await res.json();
+  assert.equal(payload.details.storyId, 98765);
 });
 
 test("resolveAdminTestContent returns 202 when crawl task is still running", async () => {

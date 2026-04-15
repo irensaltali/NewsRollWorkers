@@ -14,6 +14,7 @@ import {
   getStorySummaryAndContent,
   storeStorySummary,
   storeReadableContent,
+  replaceStoryContent,
   storeHeadline,
   storeAIRequestReceipt,
   storeCachedAIResult,
@@ -26,7 +27,8 @@ import {
   getMaxPublishedVisualFeedSequence,
   publishReadyStory,
   storeStory,
-  getStoryContentMetadataByStoryId
+  getStoryContentMetadataByStoryId,
+  getAdminStoryCurrentData
 } from "./db.mjs";
 import { error, json, readJson, bearerToken } from "./http.mjs";
 import * as log from "./log.mjs";
@@ -73,6 +75,14 @@ function now() {
 
 function normalizeText(value) {
   return typeof value === "string" ? value.trim() : "";
+}
+
+function adminDryRunEnabled(body) {
+  return body?.dryRun === true;
+}
+
+function adminReplaceStoryContentEnabled(body) {
+  return body?.replaceStoryContent === true;
 }
 
 async function resolveAIProvider(env, promptKey) {
@@ -1200,7 +1210,21 @@ async function handleAdminMediaCrawlStatus(env, taskId) {
   return json({ crawlTaskId: taskId, ...task });
 }
 
-async function resolveAdminTestContent(env, body) {
+async function handleAdminStoryCurrentData(env, pathStoryId) {
+  const storyId = Number(pathStoryId);
+  if (!Number.isInteger(storyId) || storyId <= 0) {
+    return error("Invalid storyId in path", 400);
+  }
+
+  const snapshot = await getAdminStoryCurrentData(env, storyId);
+  if (!snapshot) {
+    return error("Story data not found", 404, { storyId });
+  }
+
+  return json(snapshot);
+}
+
+async function resolveAdminTestContent(env, body, { persistCrawlResult = true } = {}) {
   let title = "";
   let articleText = "";
   let sourceKind = "provided";
@@ -1279,7 +1303,7 @@ async function resolveAdminTestContent(env, body) {
         title: body.title ?? "",
         text: body.text ?? "",
         url: sourceUrl || null
-      }, { allowCrawl: true, recrawl: true });
+      }, { allowCrawl: true, recrawl: true, persistCrawlResult });
       title = resolved.title || body.title || "";
       articleText = resolved.text || "";
       sourceKind = resolved.sourceKind ?? "crawl";
@@ -1300,7 +1324,7 @@ async function resolveAdminTestContent(env, body) {
           title: body.title ?? "",
           text: body.text ?? "",
           url: sourceUrl
-        });
+        }, { persistCrawlResult });
         title = withCrawl.title || title;
         articleText = withCrawl.text || "";
         sourceKind = withCrawl.sourceKind ?? sourceKind;
@@ -1348,9 +1372,25 @@ async function resolveAdminTestContent(env, body) {
 }
 
 async function resolveAdminOptimizerConfig(env, body) {
+  const optimizerConfigId = Number(body.optimizerConfigId);
+  if (Number.isInteger(optimizerConfigId) && optimizerConfigId > 0) {
+    return getImagePromptOptimizerConfig(env, {
+      id: optimizerConfigId
+    });
+  }
+
+  const optimizerKey = normalizeText(body.optimizerKey);
+  const optimizerVersion = normalizeText(body.optimizerVersion);
+  if (optimizerKey || optimizerVersion) {
+    return getImagePromptOptimizerConfig(env, {
+      key: optimizerKey || DEFAULT_IMAGE_PROMPT_OPTIMIZER_KEY,
+      version: optimizerVersion || null
+    });
+  }
+
   return getImagePromptOptimizerConfig(env, {
-    key: normalizeText(body.optimizerKey) || DEFAULT_IMAGE_PROMPT_OPTIMIZER_KEY,
-    version: normalizeText(body.optimizerVersion) || null
+    randomActive: true,
+    key: null
   });
 }
 
@@ -1364,27 +1404,29 @@ function buildAdminOptimizerInput(resolvedContent) {
   });
 }
 
-async function runAdminPromptOptimization(env, body, resolvedContent, storyId, source) {
+async function runAdminPromptOptimization(env, body, resolvedContent, storyId, source, { persistPromptGeneration = true } = {}) {
   const optimizerConfig = await resolveAdminOptimizerConfig(env, body);
   const optimizerInput = buildAdminOptimizerInput(resolvedContent);
   const optimization = await generateOptimizedImagePrompt(env, optimizerInput, {
     config: optimizerConfig,
     storyId
   });
-  const promptGenerationId = await createImagePromptGeneration(env, {
-    storyId,
-    source,
-    optimizerConfigId: optimizerConfig.id ?? null,
-    optimizerKey: optimizerConfig.key,
-    optimizerVersion: optimizerConfig.version,
-    optimizerProvider: optimization.provider ?? optimizerConfig.provider,
-    optimizerModel: optimization.model ?? optimizerConfig.model,
-    optimizerInput,
-    optimizedPrompt: optimization.optimizedPrompt,
-    status: optimization.status,
-    latencyMs: optimization.latencyMs,
-    errorText: optimization.errorText
-  });
+  const promptGenerationId = persistPromptGeneration
+    ? await createImagePromptGeneration(env, {
+      storyId,
+      source,
+      optimizerConfigId: optimizerConfig.id ?? null,
+      optimizerKey: optimizerConfig.key,
+      optimizerVersion: optimizerConfig.version,
+      optimizerProvider: optimization.provider ?? optimizerConfig.provider,
+      optimizerModel: optimization.model ?? optimizerConfig.model,
+      optimizerInput,
+      optimizedPrompt: optimization.optimizedPrompt,
+      status: optimization.status,
+      latencyMs: optimization.latencyMs,
+      errorText: optimization.errorText
+    })
+    : null;
 
   return {
     optimizerConfig,
@@ -1426,10 +1468,50 @@ async function applyApprovedAdminTest(env, body) {
   if (!env.MEDIA_BUCKET?.get || !env.MEDIA_BUCKET?.put) {
     return error("MEDIA_BUCKET binding is required to apply a saved test", 503);
   }
+  const applied = await applyAdminManifestToStory(env, {
+    storyId,
+    existingEntry,
+    manifest,
+    replaceStoredContent: adminReplaceStoryContentEnabled(body),
+    requestIdPrefix: "admin_test"
+  });
 
+  return json({
+    ok: true,
+    storyId,
+    applied: true,
+    testManifestKey: manifestKey,
+    mediaKey: applied.mediaKey,
+    mediaUrl: applied.mediaUrl,
+    publishedEntry: {
+      storyId,
+      publishSequence: existingEntry.publishSequence,
+      publishedAt: existingEntry.publishedAt,
+      sourceEndpoint: existingEntry.sourceEndpoint,
+      mediaStatus: "ready",
+      headline: applied.headline
+    },
+    contentUpdated: {
+      readableContent: Boolean(applied.articleText),
+      headline: Boolean(applied.headline),
+      summary: Boolean(applied.summary),
+      topics: Array.isArray(applied.topics) ? applied.topics.length : 0
+    },
+    replacedStoryContent: adminReplaceStoryContentEnabled(body),
+    shaped: applied.shapedResult
+  });
+}
+
+async function applyAdminManifestToStory(env, {
+  storyId,
+  existingEntry,
+  manifest,
+  replaceStoredContent = false,
+  requestIdPrefix = "admin_apply"
+}) {
   const assetObject = await env.MEDIA_BUCKET.get(manifest.assetKey);
   if (!assetObject) {
-    return error("Saved test asset not found", 404);
+    throw Object.assign(new Error("Saved test asset not found"), { status: 404 });
   }
 
   const articleText = typeof manifest.articleText === "string" ? manifest.articleText : "";
@@ -1453,34 +1535,49 @@ async function applyApprovedAdminTest(env, body) {
   const sourceUrl = normalizeText(manifest.sourceUrl) || null;
   const sourceKind = normalizeText(manifest.sourceKind) || null;
 
-  if (articleText) {
-    await storeReadableContent(env, {
+  if (replaceStoredContent) {
+    await replaceStoryContent(env, {
       storyId,
       sourceKind: sourceKind ?? "provided",
-      extractedText: articleText,
-      sourceUrl,
-      updatedAt
-    });
-  }
-
-  if (headline) {
-    await storeHeadline(env, storyId, headline);
-  }
-
-  if (summary || topics) {
-    await storeStorySummary(env, {
-      storyId,
+      extractedText: articleText || null,
       sourceUrl,
       summary,
+      explanation: null,
+      explanationJson: null,
+      aiHeadline: headline,
       topics,
       updatedAt
     });
+  } else {
+    if (articleText) {
+      await storeReadableContent(env, {
+        storyId,
+        sourceKind: sourceKind ?? "provided",
+        extractedText: articleText,
+        sourceUrl,
+        updatedAt
+      });
+    }
+
+    if (headline) {
+      await storeHeadline(env, storyId, headline);
+    }
+
+    if (summary || topics) {
+      await storeStorySummary(env, {
+        storyId,
+        sourceUrl,
+        summary,
+        topics,
+        updatedAt
+      });
+    }
   }
 
   await upsertMedia(env, {
     storyId,
     status: "ready",
-    falRequestId: `admin_test:${manifest.runId ?? crypto.randomUUID()}`,
+    falRequestId: `${requestIdPrefix}:${manifest.runId ?? crypto.randomUUID()}`,
     mediaKey,
     mediaUrl,
     failureReason: null,
@@ -1496,7 +1593,6 @@ async function applyApprovedAdminTest(env, body) {
   });
 
   await updatePublishedFeedEntry(env, storyId, {
-    mediaUrl,
     mediaStatus: "ready",
     headline
   });
@@ -1534,29 +1630,15 @@ async function applyApprovedAdminTest(env, body) {
     optimizerConfigId: manifest.optimizerUsed?.id ?? null
   });
 
-  return json({
-    ok: true,
-    storyId,
-    applied: true,
-    testManifestKey: manifestKey,
+  return {
+    articleText,
+    headline,
+    summary,
+    topics,
     mediaKey,
     mediaUrl,
-    publishedEntry: {
-      storyId,
-      publishSequence: existingEntry.publishSequence,
-      publishedAt: existingEntry.publishedAt,
-      sourceEndpoint: existingEntry.sourceEndpoint,
-      mediaStatus: "ready",
-      headline
-    },
-    contentUpdated: {
-      readableContent: Boolean(articleText),
-      headline: Boolean(headline),
-      summary: Boolean(summary),
-      topics: Array.isArray(topics) ? topics.length : 0
-    },
-    shaped: shapedResult
-  });
+    shapedResult
+  };
 }
 
 async function handleAdminTestPrompt(request, env) {
@@ -1577,18 +1659,23 @@ async function handleAdminTestPrompt(request, env) {
   const start = Date.now();
 
   try {
+    const dryRun = adminDryRunEnabled(body);
     const storyId = Number.isInteger(Number(body.storyId)) && Number(body.storyId) > 0
       ? Number(body.storyId)
       : null;
     const existingEntry = storyId
       ? (await getPublishedFeedEntriesByStoryIds(env, [storyId]))[0] ?? null
       : null;
-    const resolvedContent = await resolveAdminTestContent(env, body);
-    const shouldGenerateImage = body.generateImage !== false;
-    const optimized = await runAdminPromptOptimization(env, body, resolvedContent, storyId, "admin_test_prompt");
+    const resolvedContent = await resolveAdminTestContent(env, body, {
+      persistCrawlResult: !dryRun
+    });
+    const shouldGenerateImage = !dryRun && body.generateImage !== false;
+    const optimized = await runAdminPromptOptimization(env, body, resolvedContent, storyId, "admin_test_prompt", {
+      persistPromptGeneration: !dryRun
+    });
 
     let optimizerPromptRunEventId = null;
-    if (body.logPromptRun !== false) {
+    if (body.logPromptRun !== false && !dryRun) {
       try {
         const eventResult = await createPromptRunEvent(env, {
           source: "admin_test_prompt_optimizer",
@@ -1648,7 +1735,8 @@ async function handleAdminTestPrompt(request, env) {
         optimizerPromptRunEventId,
         imagePromptRunEventId: null,
         billableUnits: null,
-        approval: null
+        approval: null,
+        dryRun
       });
     }
 
@@ -1783,6 +1871,7 @@ async function handleAdminTestPrompt(request, env) {
       optimizerPromptRunEventId,
       imagePromptRunEventId,
       billableUnits: result.billableUnits ?? null,
+      dryRun,
       approval: approval ? {
         canApply: true,
         storyId,
@@ -1807,15 +1896,20 @@ async function handleAdminMediaPrompt(request, env) {
 
   const start = Date.now();
   try {
+    const dryRun = adminDryRunEnabled(body);
     const storyId = Number.isInteger(Number(body.storyId)) && Number(body.storyId) > 0
       ? Number(body.storyId) : null;
     const existingEntry = storyId
       ? (await getPublishedFeedEntriesByStoryIds(env, [storyId]))[0] ?? null : null;
-    const resolvedContent = await resolveAdminTestContent(env, body);
-    const optimized = await runAdminPromptOptimization(env, body, resolvedContent, storyId, "admin_media_prompt");
+    const resolvedContent = await resolveAdminTestContent(env, body, {
+      persistCrawlResult: !dryRun
+    });
+    const optimized = await runAdminPromptOptimization(env, body, resolvedContent, storyId, "admin_media_prompt", {
+      persistPromptGeneration: !dryRun
+    });
 
     let optimizerPromptRunEventId = null;
-    if (body.logPromptRun !== false) {
+    if (body.logPromptRun !== false && !dryRun) {
       try {
         const eventResult = await createPromptRunEvent(env, {
           source: "admin_media_prompt_optimizer",
@@ -1865,6 +1959,7 @@ async function handleAdminMediaPrompt(request, env) {
       optimizerPromptRunEventId,
       optimizerLatencyMs: optimized.optimization.latencyMs ?? 0,
       error: optimized.optimization.errorText ?? null,
+      dryRun,
       totalMs: Date.now() - start
     });
   } catch (err) {
@@ -1881,10 +1976,17 @@ async function handleAdminMediaGenerate(request, env) {
 
   const start = Date.now();
   try {
+    const applyToStory = body.applyToStory === true;
     const storyId = Number.isInteger(Number(body.storyId)) && Number(body.storyId) > 0
       ? Number(body.storyId) : null;
+    if (applyToStory && !storyId) {
+      return error("storyId is required when applyToStory=true", 400);
+    }
     const existingEntry = storyId
       ? (await getPublishedFeedEntriesByStoryIds(env, [storyId]))[0] ?? null : null;
+    if (applyToStory && !existingEntry) {
+      return error("Published feed item not found for storyId", 404);
+    }
     const resolvedContent = await resolveAdminTestContent(env, body);
     const optimized = await runAdminPromptOptimization(env, body, resolvedContent, storyId, "admin_media_generate");
     let optimizerPromptRunEventId = null;
@@ -1967,6 +2069,7 @@ async function handleAdminMediaGenerate(request, env) {
 
     let previewId = null;
     let previewAssetUrl = null;
+    let appliedResult = null;
     if (result.status === "ready" && result.url) {
       const staged = await writeAdminTestAsset(env, {
         storyId,
@@ -1994,6 +2097,20 @@ async function handleAdminMediaGenerate(request, env) {
       });
       previewId = staged?.manifestKey ?? null;
       previewAssetUrl = staged?.assetUrl ?? null;
+
+      if (applyToStory && storyId) {
+        if (!existingEntry) {
+          return error("Published feed item not found for storyId", 404);
+        }
+        const manifest = await readAdminTestManifest(env, previewId);
+        appliedResult = await applyAdminManifestToStory(env, {
+          storyId,
+          existingEntry,
+          manifest,
+          replaceStoredContent: adminReplaceStoryContentEnabled(body),
+          requestIdPrefix: "admin_generate_apply"
+        });
+      }
     }
 
     let promptRunEventId = null;
@@ -2057,7 +2174,17 @@ async function handleAdminMediaGenerate(request, env) {
       promptGenerationId: optimized.promptGenerationId,
       optimizerPromptRunEventId,
       imagePromptRunEventId: promptRunEventId,
-      billableUnits: result.billableUnits ?? null
+      billableUnits: result.billableUnits ?? null,
+      applied: Boolean(appliedResult),
+      replacedStoryContent: Boolean(appliedResult) && adminReplaceStoryContentEnabled(body),
+      appliedResult: appliedResult ? {
+        storyId,
+        mediaKey: appliedResult.mediaKey,
+        mediaUrl: appliedResult.mediaUrl,
+        headline: appliedResult.headline,
+        summary: appliedResult.summary,
+        topics: appliedResult.topics
+      } : null
     });
   } catch (err) {
     return error(err instanceof Error ? err.message : "Admin media generate failed", err?.status ?? 500, err?.details);
@@ -2243,109 +2370,12 @@ async function handleAdminMediaApply(request, env, pathStoryId) {
     if (!env.MEDIA_BUCKET?.get || !env.MEDIA_BUCKET?.put) {
       return error("MEDIA_BUCKET binding is required", 503);
     }
-
-    const assetObject = await env.MEDIA_BUCKET.get(manifest.assetKey);
-    if (!assetObject) return error("Preview asset not found", 404);
-
-    const articleText = typeof manifest.articleText === "string" ? manifest.articleText : "";
-    const fallbackText = `${manifest.title ?? ""} ${manifest.sourceUrl ?? ""}`.trim() || "News story";
-    const contentHash = await sha256Hex(articleText || fallbackText);
-    const extension = mediaExtensionFromContentType(manifest.assetContentType, "webp");
-    const mediaKey = `stories/${storyId}-${contentHash}.${extension}`;
-    const mediaBytes = new Uint8Array(await assetObject.arrayBuffer());
-    await env.MEDIA_BUCKET.put(mediaKey, mediaBytes, {
-      httpMetadata: { contentType: manifest.assetContentType ?? "image/webp" }
-    });
-
-    const mediaUrl = publicMediaUrlFor(env, mediaKey);
-    const updatedAt = now();
-    const crawlMetadata = manifest.crawlMetadata && typeof manifest.crawlMetadata === "object"
-      ? manifest.crawlMetadata : null;
-    const headline = crawlMetadata?.headline ?? existingEntry.headline ?? null;
-    const summary = crawlMetadata?.summary ?? null;
-    const topics = Array.isArray(crawlMetadata?.topics) ? crawlMetadata.topics : null;
-    const sourceUrl = normalizeText(manifest.sourceUrl) || null;
-    const sourceKind = normalizeText(manifest.sourceKind) || null;
-
-    if (articleText) {
-      await storeReadableContent(env, {
-        storyId,
-        sourceKind: sourceKind ?? "provided",
-        extractedText: articleText,
-        sourceUrl,
-        updatedAt
-      });
-    }
-
-    if (headline) {
-      await storeHeadline(env, storyId, headline);
-    }
-
-    if (summary || topics) {
-      await storeStorySummary(env, {
-        storyId,
-        sourceUrl,
-        summary,
-        topics,
-        updatedAt
-      });
-    }
-
-    await upsertMedia(env, {
+    const applied = await applyAdminManifestToStory(env, {
       storyId,
-      status: "ready",
-      falRequestId: `admin_apply:${manifest.runId ?? crypto.randomUUID()}`,
-      mediaKey,
-      mediaUrl,
-      failureReason: null,
-      attempts: 1,
-      updatedAt,
-      imagePrompt: manifest.resolvedPrompt ?? null,
-      imagePromptGenerationId: manifest.promptGenerationId ?? null,
-      optimizerConfigId: manifest.optimizerUsed?.id ?? null,
-      mediaType: "image",
-      provider: manifest.provider ?? null,
-      model: manifest.model ?? null,
-      generationLatencyMs: Number.isFinite(manifest.latencyMs) ? manifest.latencyMs : null
-    });
-
-    await updatePublishedFeedEntry(env, storyId, {
-      mediaUrl,
-      mediaStatus: "ready",
-      headline
-    });
-
-    await updatePublishedFeedEntryMediaProjection(env, storyId, {
-      mediaType: "image",
-      mediaProvider: manifest.provider ?? null,
-      mediaModel: manifest.model ?? null,
-      generationStatus: "ready",
-      generationLatencyMs: Number.isFinite(manifest.latencyMs) ? manifest.latencyMs : null,
-      generationCostUsd: null
-    });
-
-    const updatedEntry = {
-      ...existingEntry,
-      mediaUrl,
-      mediaStatus: "ready",
-      headline
-    };
-
-    await refreshPublishedFeedSnapshot(env, updatedEntry);
-
-    const shapedResult = await upsertShapedItem(env, {
-      storyId,
-      headline,
-      title: manifest.title ?? "",
-      summary,
-      category: existingEntry.sourceEndpoint,
-      topics,
-      publishedAt: existingEntry.publishedAt,
-      mediaUrl,
-      mediaType: "image",
-      mediaProvider: manifest.provider ?? null,
-      mediaModel: manifest.model ?? null,
-      optimizerConfigId: manifest.optimizerUsed?.id ?? null
+      existingEntry,
+      manifest,
+      replaceStoredContent: adminReplaceStoryContentEnabled(body),
+      requestIdPrefix: "admin_apply"
     });
 
     return json({
@@ -2353,23 +2383,24 @@ async function handleAdminMediaApply(request, env, pathStoryId) {
       storyId,
       applied: true,
       previewId,
-      mediaKey,
-      mediaUrl,
+      mediaKey: applied.mediaKey,
+      mediaUrl: applied.mediaUrl,
       publishedEntry: {
         storyId,
         publishSequence: existingEntry.publishSequence,
         publishedAt: existingEntry.publishedAt,
         sourceEndpoint: existingEntry.sourceEndpoint,
         mediaStatus: "ready",
-        headline
+        headline: applied.headline
       },
       contentUpdated: {
-        readableContent: Boolean(articleText),
-        headline: Boolean(headline),
-        summary: Boolean(summary),
-        topics: Array.isArray(topics) ? topics.length : 0
+        readableContent: Boolean(applied.articleText),
+        headline: Boolean(applied.headline),
+        summary: Boolean(applied.summary),
+        topics: Array.isArray(applied.topics) ? applied.topics.length : 0
       },
-      shaped: shapedResult
+      replacedStoryContent: adminReplaceStoryContentEnabled(body),
+      shaped: applied.shapedResult
     });
   } catch (err) {
     return error(err instanceof Error ? err.message : "Admin media apply failed", err?.status ?? 500, err?.details);
@@ -2411,6 +2442,14 @@ async function routeRequest(request, env, ctx) {
   if (request.method === "GET" && segments[0] === "v1" && segments[1] === "stories" && segments[2] && segments[3] === "article") {
     const response = await handleReadableArticle(env, segments[2]);
     return { response, route: "readable_article" };
+  }
+
+  // GET /admin/stories/:storyId
+  if (request.method === "GET" && segments[0] === "admin" && segments[1] === "stories" && segments[2]) {
+    const authErr = requireAdminKey(request, env);
+    if (authErr) return { response: authErr, route: "admin_story_current_data" };
+    const response = await handleAdminStoryCurrentData(env, segments[2]);
+    return { response, route: "admin_story_current_data" };
   }
 
   // GET /admin/media/crawl/:taskId

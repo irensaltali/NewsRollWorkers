@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 
 import {
   clearRSSItemCrawlFailure,
+  getImagePromptOptimizerConfig,
   markRSSItemCrawlFailure,
   storeReadableContent,
   storeStoryExplanation,
@@ -214,5 +215,108 @@ test("clearRSSItemCrawlFailure resets failure details on rss_items", async () =>
     });
   } finally {
     globalThis.fetch = originalFetch;
+  }
+});
+
+test("getImagePromptOptimizerConfig selects an explicit config id when provided", async () => {
+  const env = {
+    SUPABASE_URL: "https://example.supabase.co",
+    SUPABASE_SECRET_KEY: "service-role-test"
+  };
+
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (input) => {
+    const url = typeof input === "string" ? input : input.url;
+    if (url.includes("/rest/v1/image_prompt_optimizer_configs")) {
+      return new Response(JSON.stringify({
+        id: 42,
+        key: "campaign_optimizer",
+        version: "v2",
+        name: "Campaign Optimizer",
+        provider: "openai",
+        model: "gpt-5.4-mini-2026-03-17",
+        max_completion_tokens: 400,
+        system_prompt: "system",
+        user_prompt_template: "template",
+        settings: {},
+        active: false
+      }), {
+        status: 200,
+        headers: { "content-type": "application/json" }
+      });
+    }
+
+    throw new Error(`Unexpected fetch: ${url}`);
+  };
+
+  try {
+    const config = await getImagePromptOptimizerConfig(env, { id: 42 });
+    assert.equal(config.id, 42);
+    assert.equal(config.key, "campaign_optimizer");
+    assert.equal(config.version, "v2");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("getImagePromptOptimizerConfig can choose a random active config", async () => {
+  const env = {
+    SUPABASE_URL: "https://example.supabase.co",
+    SUPABASE_SECRET_KEY: "service-role-test"
+  };
+
+  const originalFetch = globalThis.fetch;
+  const originalRandom = Math.random;
+  Math.random = () => 0.75;
+
+  globalThis.fetch = async (input) => {
+    const url = typeof input === "string" ? input : input.url;
+    if (url.includes("/rest/v1/image_prompt_optimizer_configs")) {
+      return new Response(JSON.stringify([
+        {
+          id: 1,
+          key: "optimizer_a",
+          version: "v1",
+          name: "Optimizer A",
+          provider: "openai",
+          model: "gpt-5.4-mini-2026-03-17",
+          max_completion_tokens: 400,
+          system_prompt: "system-a",
+          user_prompt_template: "template-a",
+          settings: {},
+          active: true
+        },
+        {
+          id: 2,
+          key: "optimizer_b",
+          version: "v1",
+          name: "Optimizer B",
+          provider: "openai",
+          model: "gpt-5.4-mini-2026-03-17",
+          max_completion_tokens: 400,
+          system_prompt: "system-b",
+          user_prompt_template: "template-b",
+          settings: {},
+          active: true
+        }
+      ]), {
+        status: 200,
+        headers: { "content-type": "application/json" }
+      });
+    }
+
+    throw new Error(`Unexpected fetch: ${url}`);
+  };
+
+  try {
+    const config = await getImagePromptOptimizerConfig(env, {
+      randomActive: true,
+      key: null
+    });
+    assert.equal(config.id, 2);
+    assert.equal(config.key, "optimizer_b");
+  } finally {
+    globalThis.fetch = originalFetch;
+    Math.random = originalRandom;
   }
 });

@@ -108,6 +108,28 @@ async function listStorySourceUrls(env, storyIds) {
   );
 }
 
+async function listStoryMediaUrls(env, storyIds) {
+  if (!hasDB(env) || !Array.isArray(storyIds) || storyIds.length === 0) {
+    return new Map();
+  }
+
+  const uniqueStoryIds = [...new Set(storyIds.filter((storyId) => Number.isFinite(Number(storyId))))];
+  if (uniqueStoryIds.length === 0) {
+    return new Map();
+  }
+
+  const { data } = await getDB(env)
+    .from("story_media")
+    .select("story_id, media_url")
+    .in("story_id", uniqueStoryIds);
+
+  return new Map(
+    (data ?? [])
+      .filter((entry) => entry?.media_url)
+      .map((entry) => [Number(entry.story_id), entry.media_url])
+  );
+}
+
 // ── Visual feed ──────────────────────────────────────────────────────────────
 
 export async function listPublishedVisualFeed(env, { cursor = null, limit = 20 } = {}) {
@@ -137,13 +159,17 @@ export async function listPublishedVisualFeed(env, { cursor = null, limit = 20 }
     env,
     (data ?? []).map((entry) => Number(entry.story_id))
   );
+  const mediaUrlsByStoryId = await listStoryMediaUrls(
+    env,
+    (data ?? []).map((entry) => Number(entry.story_id))
+  );
 
   return (data ?? []).map((r) => ({
     storyId: r.story_id,
     publishSequence: r.publish_sequence,
     sourceEndpoint: r.source_endpoint,
     publishedAt: r.published_at,
-    mediaUrl: r.media_url,
+    mediaUrl: mediaUrlsByStoryId.get(Number(r.story_id)) ?? r.media_url ?? null,
     sourceUrl: sourceUrlsByStoryId.get(Number(r.story_id)) ?? null,
     mediaStatus: r.media_status,
     headline: r.headline
@@ -164,6 +190,7 @@ export async function getPublishedFeedEntriesByStoryIds(env, storyIds) {
     .in("story_id", uniqueIds);
 
   const sourceUrlsByStoryId = await listStorySourceUrls(env, uniqueIds);
+  const mediaUrlsByStoryId = await listStoryMediaUrls(env, uniqueIds);
 
   const rowsByStoryId = new Map(
     (data ?? []).map((r) => [Number(r.story_id), {
@@ -171,7 +198,7 @@ export async function getPublishedFeedEntriesByStoryIds(env, storyIds) {
       publishSequence: r.publish_sequence,
       sourceEndpoint: r.source_endpoint,
       publishedAt: r.published_at,
-      mediaUrl: r.media_url,
+      mediaUrl: mediaUrlsByStoryId.get(Number(r.story_id)) ?? r.media_url ?? null,
       sourceUrl: sourceUrlsByStoryId.get(Number(r.story_id)) ?? null,
       mediaStatus: r.media_status,
       headline: r.headline
@@ -188,7 +215,6 @@ export async function updatePublishedFeedEntry(env, storyId, fields) {
   const updates = {};
   assignDefined(updates, "source_endpoint", fields.sourceEndpoint);
   assignDefined(updates, "published_at", fields.publishedAt);
-  assignDefined(updates, "media_url", fields.mediaUrl);
   assignDefined(updates, "media_status", fields.mediaStatus);
   assignDefined(updates, "headline", fields.headline);
 
@@ -258,7 +284,6 @@ export async function publishReadyStory(env, payload) {
       publish_sequence: payload.publishSequence,
       source_endpoint: payload.sourceEndpoint,
       published_at: payload.publishedAt,
-      media_url: payload.mediaUrl ?? null,
       media_status: payload.mediaStatus ?? null,
       headline: payload.headline ?? null
     });
@@ -331,6 +356,31 @@ export async function storeReadableContent(env, payload) {
   await upsertStoryContent(env, payload);
 }
 
+export async function replaceStoryContent(env, payload) {
+  if (!hasDB(env)) return;
+
+  const resolvedUrls = await resolveStoryContentUrls(env, payload.storyId, {
+    sourceUrl: payload.sourceUrl ?? null,
+    feedUrl: payload.feedUrl ?? null
+  });
+
+  await getDB(env)
+    .from("story_content")
+    .upsert({
+      story_id: payload.storyId,
+      source_kind: payload.sourceKind ?? "unknown",
+      extracted_text: payload.extractedText ?? null,
+      source_url: resolvedUrls.sourceUrl,
+      feed_url: resolvedUrls.feedUrl,
+      summary: payload.summary ?? null,
+      explanation: payload.explanation ?? null,
+      explanation_json: payload.explanationJson ?? null,
+      ai_headline: payload.aiHeadline ?? null,
+      topics: payload.topics ?? null,
+      updated_at: payload.updatedAt
+    });
+}
+
 export async function getReadableContent(env, storyId) {
   if (!hasDB(env)) return null;
 
@@ -356,6 +406,107 @@ export async function getStorySummaryAndContent(env, storyId) {
   return {
     summary: data.summary ?? null,
     extractedText: data.extracted_text ?? null
+  };
+}
+
+export async function getAdminStoryCurrentData(env, storyId) {
+  if (!hasDB(env)) return null;
+
+  const numericStoryId = Number(storyId);
+  if (!Number.isInteger(numericStoryId) || numericStoryId <= 0) {
+    return null;
+  }
+
+  const [publishedResult, contentResult, mediaResult, sourceMetadata] = await Promise.all([
+    getDB(env)
+      .from("published_feed_entries")
+      .select("story_id, publish_sequence, source_endpoint, published_at, media_url, media_status, headline, media_type, media_provider, media_model, generation_status, generation_latency_ms, generation_cost_usd, engagement_count, impression_count")
+      .eq("story_id", numericStoryId)
+      .maybeSingle(),
+    getDB(env)
+      .from("story_content")
+      .select("story_id, source_kind, extracted_text, ai_headline, source_url, feed_url, summary, explanation, explanation_json, topics, updated_at")
+      .eq("story_id", numericStoryId)
+      .maybeSingle(),
+    getDB(env)
+      .from("story_media")
+      .select("story_id, status, fal_request_id, media_key, media_url, failure_reason, attempts, image_prompt, image_prompt_generation_id, optimizer_config_id, media_type, provider, model, generation_latency_ms, updated_at")
+      .eq("story_id", numericStoryId)
+      .maybeSingle(),
+    getStoryContentMetadataByStoryId(env, numericStoryId)
+  ]);
+
+  const published = publishedResult.data
+    ? {
+      storyId: Number(publishedResult.data.story_id),
+      publishSequence: publishedResult.data.publish_sequence ?? null,
+      sourceEndpoint: publishedResult.data.source_endpoint ?? null,
+      publishedAt: publishedResult.data.published_at ?? null,
+      mediaStatus: publishedResult.data.media_status ?? null,
+      headline: publishedResult.data.headline ?? null,
+      mediaType: publishedResult.data.media_type ?? null,
+      mediaProvider: publishedResult.data.media_provider ?? null,
+      mediaModel: publishedResult.data.media_model ?? null,
+      generationStatus: publishedResult.data.generation_status ?? null,
+      generationLatencyMs: publishedResult.data.generation_latency_ms ?? null,
+      generationCostUsd: publishedResult.data.generation_cost_usd ?? null,
+      engagementCount: publishedResult.data.engagement_count ?? null,
+      impressionCount: publishedResult.data.impression_count ?? null
+    }
+    : null;
+
+  const content = contentResult.data
+    ? {
+      storyId: Number(contentResult.data.story_id),
+      sourceKind: contentResult.data.source_kind ?? null,
+      extractedText: contentResult.data.extracted_text ?? null,
+      aiHeadline: contentResult.data.ai_headline ?? null,
+      sourceUrl: contentResult.data.source_url ?? null,
+      feedUrl: contentResult.data.feed_url ?? null,
+      summary: contentResult.data.summary ?? null,
+      explanation: contentResult.data.explanation ?? null,
+      explanationJson: contentResult.data.explanation_json ?? null,
+      topics: Array.isArray(contentResult.data.topics) ? contentResult.data.topics : null,
+      updatedAt: contentResult.data.updated_at ?? null
+    }
+    : null;
+
+  const media = mediaResult.data
+    ? {
+      storyId: Number(mediaResult.data.story_id),
+      status: mediaResult.data.status ?? null,
+      falRequestId: mediaResult.data.fal_request_id ?? null,
+      mediaKey: mediaResult.data.media_key ?? null,
+      mediaUrl: mediaResult.data.media_url ?? null,
+      failureReason: mediaResult.data.failure_reason ?? null,
+      attempts: mediaResult.data.attempts ?? null,
+      imagePrompt: mediaResult.data.image_prompt ?? null,
+      imagePromptGenerationId: mediaResult.data.image_prompt_generation_id ?? null,
+      optimizerConfigId: mediaResult.data.optimizer_config_id ?? null,
+      mediaType: mediaResult.data.media_type ?? null,
+      provider: mediaResult.data.provider ?? null,
+      model: mediaResult.data.model ?? null,
+      generationLatencyMs: mediaResult.data.generation_latency_ms ?? null,
+      updatedAt: mediaResult.data.updated_at ?? null
+    }
+    : null;
+
+  if (!published && !content && !media && !sourceMetadata) {
+    return null;
+  }
+
+  return {
+    storyId: numericStoryId,
+    publishedEntry: published,
+    storyContent: content,
+    storyMedia: media,
+    sourceMetadata: sourceMetadata
+      ? {
+        url: sourceMetadata.url ?? null,
+        canonicalUrl: sourceMetadata.canonicalUrl ?? null,
+        feedUrl: sourceMetadata.feedUrl ?? null
+      }
+      : null
   };
 }
 
@@ -700,9 +851,11 @@ function normalizeImagePromptOptimizerConfigRow(r) {
 }
 
 export async function getImagePromptOptimizerConfig(env, {
+  id = null,
   key = DEFAULT_IMAGE_PROMPT_OPTIMIZER_KEY,
   version = null,
-  activeOnly = true
+  activeOnly = true,
+  randomActive = false
 } = {}) {
   if (!hasDB(env)) {
     return imagePromptOptimizerConfigWithFallback({
@@ -712,10 +865,45 @@ export async function getImagePromptOptimizerConfig(env, {
     });
   }
 
+  if (Number.isInteger(Number(id)) && Number(id) > 0) {
+    const { data } = await getDB(env)
+      .from("image_prompt_optimizer_configs")
+      .select("*")
+      .eq("id", Number(id))
+      .maybeSingle();
+
+    return normalizeImagePromptOptimizerConfigRow(data) ?? imagePromptOptimizerConfigWithFallback({
+      ...DEFAULT_IMAGE_PROMPT_OPTIMIZER_CONFIG,
+      key: DEFAULT_IMAGE_PROMPT_OPTIMIZER_KEY,
+      version: DEFAULT_IMAGE_PROMPT_OPTIMIZER_VERSION
+    });
+  }
+
+  if (randomActive && !version) {
+    let randomQuery = getDB(env)
+      .from("image_prompt_optimizer_configs")
+      .select("*")
+      .eq("active", true);
+
+    if (key) {
+      randomQuery = randomQuery.eq("key", key);
+    }
+
+    const { data } = await randomQuery;
+    const configs = (data ?? []).map(normalizeImagePromptOptimizerConfigRow).filter(Boolean);
+    if (configs.length > 0) {
+      const selectedIndex = Math.floor(Math.random() * configs.length);
+      return configs[selectedIndex];
+    }
+  }
+
   let query = getDB(env)
     .from("image_prompt_optimizer_configs")
-    .select("*")
-    .eq("key", key);
+    .select("*");
+
+  if (key) {
+    query = query.eq("key", key);
+  }
 
   if (version) {
     query = query.eq("version", version);
