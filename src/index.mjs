@@ -1,4 +1,4 @@
-import { buildAppConfig, publicMediaUrlFor } from "./config.mjs";
+import { buildAppConfig, publicApiBaseUrl, publicMediaUrlFor } from "./config.mjs";
 import {
   getReadableContent,
   getAIPromptConfig,
@@ -120,6 +120,28 @@ function mediaExtensionFromContentType(contentType, fallback = "webp") {
   if (normalized.includes("webp")) return "webp";
   if (normalized.includes("gif")) return "gif";
   return fallback;
+}
+
+function mediaKeyFromPublicUrl(env, mediaUrl) {
+  const normalizedUrl = normalizeText(mediaUrl);
+  if (!normalizedUrl) {
+    return null;
+  }
+
+  const prefixes = [];
+  if (env?.PUBLIC_MEDIA_BASE_URL) {
+    prefixes.push(`${String(env.PUBLIC_MEDIA_BASE_URL).replace(/\/+$/, "")}/`);
+  }
+  prefixes.push(`${publicApiBaseUrl(env)}/media/`);
+
+  for (const prefix of prefixes) {
+    if (normalizedUrl.startsWith(prefix)) {
+      const mediaKey = normalizedUrl.slice(prefix.length).replace(/^\/+/, "");
+      return mediaKey || null;
+    }
+  }
+
+  return null;
 }
 
 function decodeBase64(value) {
@@ -1561,7 +1583,9 @@ async function applyAdminManifestToStory(env, {
   const fallbackText = `${manifest.title ?? ""} ${manifest.sourceUrl ?? ""}`.trim() || "News story";
   const contentHash = await sha256Hex(articleText || fallbackText);
   const extension = mediaExtensionFromContentType(manifest.assetContentType, "webp");
-  const mediaKey = `stories/${storyId}-${contentHash}.${extension}`;
+  const runId = normalizeText(manifest.runId) || crypto.randomUUID();
+  const mediaKey = `stories/${storyId}-${contentHash}-${runId}.${extension}`;
+  const previousMediaKey = mediaKeyFromPublicUrl(env, existingEntry?.mediaUrl);
   const mediaBytes = new Uint8Array(await assetObject.arrayBuffer());
   await env.MEDIA_BUCKET.put(mediaKey, mediaBytes, {
     httpMetadata: { contentType: manifest.assetContentType ?? "image/webp" }
@@ -1636,6 +1660,7 @@ async function applyAdminManifestToStory(env, {
   });
 
   await updatePublishedFeedEntry(env, storyId, {
+    mediaUrl,
     mediaStatus: "ready",
     headline
   });
@@ -1672,6 +1697,19 @@ async function applyAdminManifestToStory(env, {
     mediaModel: manifest.generationModel ?? manifest.model ?? null,
     optimizerConfigId: manifest.optimizerUsed?.id ?? null
   });
+
+  if (env.MEDIA_BUCKET?.delete && previousMediaKey && previousMediaKey !== mediaKey) {
+    try {
+      await env.MEDIA_BUCKET.delete(previousMediaKey);
+    } catch (err) {
+      log.warn({
+        event: "admin_apply_old_media_delete_fail",
+        storyId,
+        previousMediaKey,
+        ...log.fmtError(err)
+      });
+    }
+  }
 
   return {
     articleText,

@@ -78,6 +78,9 @@ function createMemoryBucket() {
           return JSON.parse(new TextDecoder().decode(entry.bytes));
         }
       };
+    },
+    async delete(key) {
+      objects.delete(key);
     }
   };
 }
@@ -502,9 +505,14 @@ test("admin media generate can apply to an existing story in one request using s
     publish_sequence: 88,
     source_endpoint: "tech",
     published_at: "2026-04-08T10:00:00.000Z",
+    media_url: "https://media.example.com/stories/12345-old.png",
     media_status: "ready",
     headline: "Existing headline"
   };
+
+  await bucket.put("stories/12345-old.png", Uint8Array.from([9, 9, 9]), {
+    httpMetadata: { contentType: "image/png" }
+  });
 
   globalThis.fetch = async (input, init = {}) => {
     const url = String(input);
@@ -568,6 +576,13 @@ test("admin media generate can apply to an existing story in one request using s
         Object.assign(publishedEntry, JSON.parse(init.body));
         return Response.json([publishedEntry]);
       }
+    }
+
+    if (url.includes("/rest/v1/story_media") && method === "GET") {
+      return Response.json([{
+        story_id: 12345,
+        media_url: "https://media.example.com/stories/12345-old.png"
+      }]);
     }
 
     if (url.includes("/rest/v1/image_prompt_optimizer_configs") && method === "GET") {
@@ -635,11 +650,14 @@ test("admin media generate can apply to an existing story in one request using s
   const payload = await response.json();
   assert.equal(payload.applied, true);
   assert.equal(payload.appliedResult.mediaUrl, writes.storyMedia[0].media_url);
+  assert.notEqual(payload.appliedResult.mediaUrl, "https://media.example.com/stories/12345-old.png");
   assert.equal(payload.appliedResult.summary, "Stored summary from db");
   assert.equal(writes.storyMedia.length, 1);
+  assert.match(writes.storyMedia[0].media_key, /^stories\/12345-[a-f0-9]+-[a-f0-9-]+\.png$/);
   assert.equal(writes.storyMedia[0].provider, "openai");
   assert.equal(writes.storyMedia[0].model, "gpt-image-1");
   assert.equal(payload.optimizerUsed.generationProvider, "openai");
+  assert.equal(bucket.objects.has("stories/12345-old.png"), false);
 });
 
 test("admin media generate can recrawl and fully replace stored story content before applying", async (t) => {
@@ -655,9 +673,18 @@ test("admin media generate can recrawl and fully replace stored story content be
     publish_sequence: 88,
     source_endpoint: "tech",
     published_at: "2026-04-08T10:00:00.000Z",
+    media_url: "https://media.example.com/stories/12345-old.webp",
     media_status: "ready",
     headline: "Old headline"
   };
+
+  await bucket.put("old.webp", Uint8Array.from([8, 8, 8]), {
+    httpMetadata: { contentType: "image/webp" }
+  });
+
+  await bucket.put("stories/12345-old.webp", Uint8Array.from([4, 4, 4]), {
+    httpMetadata: { contentType: "image/webp" }
+  });
 
   globalThis.setTimeout = (fn, _ms, ...args) => {
     fn(...args);
@@ -764,6 +791,13 @@ test("admin media generate can recrawl and fully replace stored story content be
       });
     }
 
+    if (url.includes("/rest/v1/story_media") && method === "GET") {
+      return Response.json([{
+        story_id: 12345,
+        media_url: "https://media.example.com/stories/12345-old.webp"
+      }]);
+    }
+
     if (url.includes("/rest/v1/published_feed_entries")) {
       if (method === "GET") {
         return Response.json([publishedEntry]);
@@ -772,6 +806,13 @@ test("admin media generate can recrawl and fully replace stored story content be
         Object.assign(publishedEntry, JSON.parse(init.body));
         return Response.json([publishedEntry]);
       }
+    }
+
+    if (url.includes("/rest/v1/story_media") && method === "GET") {
+      return Response.json([{
+        story_id: 12345,
+        media_url: "https://media.example.com/old.webp"
+      }]);
     }
 
     if (url.includes("/rest/v1/image_prompt_optimizer_configs") && method === "GET") {
@@ -845,11 +886,14 @@ test("admin media generate can recrawl and fully replace stored story content be
   assert.equal(payload.applied, true);
   assert.equal(payload.replacedStoryContent, true);
   assert.equal(writes.storyMedia.length, 1);
+  assert.notEqual(payload.appliedResult.mediaUrl, "https://media.example.com/stories/12345-old.webp");
+  assert.match(writes.storyMedia[0].media_key, /^stories\/12345-[a-f0-9]+-[a-f0-9-]+\.webp$/);
   assert.equal(writes.storyContent.length, 1);
   assert.equal(writes.storyContent[0].source_kind, "crawl");
   assert.equal(writes.storyContent[0].summary, "Recrawled summary");
   assert.equal(writes.storyContent[0].ai_headline, "Recrawled headline");
   assert.equal(writes.storyContent[0].explanation, null);
+  assert.equal(bucket.objects.has("stories/12345-old.webp"), false);
 });
 
 test("admin test prompt can save a preview and apply it to overwrite an existing item", async (t) => {
@@ -1045,13 +1089,15 @@ test("admin test prompt can save a preview and apply it to overwrite an existing
   const applyPayload = await applyResponse.json();
   assert.equal(applyPayload.applied, true);
   assert.equal(applyPayload.storyId, 12345);
-  assert.match(applyPayload.mediaKey, /^stories\/12345-[a-f0-9]+\.webp$/);
+  assert.match(applyPayload.mediaKey, /^stories\/12345-[a-f0-9]+-[a-f0-9-]+\.webp$/);
   assert.equal(applyPayload.mediaUrl, writes.storyMedia[0].media_url);
+  assert.notEqual(applyPayload.mediaUrl, "https://media.example.com/old.webp");
   assert.equal(publishedEntry.media_status, "ready");
   assert.equal(writes.storyMedia.length, 1);
   assert.equal(writes.storyMedia[0].story_id, 12345);
   assert.equal(writes.storyContent.length > 0, true);
   assert.equal(bucket.objects.has(previewPayload.approval.testManifestKey), true);
+  assert.equal(bucket.objects.has("old.webp"), false);
   assert.equal(
     JSON.parse(await baseEnv.VISUAL_FEED_CACHE.get()).items[0].mediaUrl,
     applyPayload.mediaUrl

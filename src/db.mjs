@@ -216,6 +216,7 @@ export async function updatePublishedFeedEntry(env, storyId, fields) {
   const updates = {};
   assignDefined(updates, "source_endpoint", fields.sourceEndpoint);
   assignDefined(updates, "published_at", fields.publishedAt);
+  assignDefined(updates, "media_url", fields.mediaUrl);
   assignDefined(updates, "media_status", fields.mediaStatus);
   assignDefined(updates, "headline", fields.headline);
 
