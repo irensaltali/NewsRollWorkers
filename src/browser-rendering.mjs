@@ -17,12 +17,12 @@ const KEEP_READING_MARKERS = [
 ];
 const ARTICLE_METADATA_PROMPT = [
   "Extract structured article data from the crawled page.",
+  "Do NOT return the article title — the title is taken verbatim from the source and must not be rewritten here.",
   "Return:",
-  "1. The article title.",
-  "2. A concise headline summary in at most 2 sentences.",
-  "3. The detected article language as a short ISO-639-1 code when possible.",
-  "4. A clear AI-generated summary in the same language as the article.",
-  "5. A list of relevant topics as lowercase keywords (e.g., ai, privacy, security, data_retention)."
+  "1. A teaser headline in exactly 2 sentences that sparks curiosity about the article without revealing its key points, answers, or conclusions.",
+  "2. The detected article language as a short ISO-639-1 code when possible.",
+  "3. A clear AI-generated summary in the same language as the article.",
+  "4. A list of relevant topics as lowercase keywords (e.g., ai, privacy, security, data_retention)."
 ].join(" ");
 const ARTICLE_METADATA_SCHEMA = Object.freeze({
   name: "article_metadata",
@@ -30,13 +30,9 @@ const ARTICLE_METADATA_SCHEMA = Object.freeze({
     type: "object",
     additionalProperties: false,
     properties: {
-      title: {
-        type: "string",
-        description: "Title of the article"
-      },
       headline: {
         type: "string",
-        description: "Concise headline summary in at most 3 sentences"
+        description: "Exactly 2 sentences that create curiosity about the article without revealing key points or conclusions. Not the article's title."
       },
       language: {
         type: "string",
@@ -52,7 +48,7 @@ const ARTICLE_METADATA_SCHEMA = Object.freeze({
         items: { type: "string" }
       }
     },
-    required: ["title", "headline", "language", "summary", "topics"]
+    required: ["headline", "language", "summary", "topics"]
   }
 });
 
@@ -173,6 +169,9 @@ export function normalizeArticleMetadata(value) {
     .filter((t) => typeof t === "string" && t.trim())
     .map((t) => t.trim().toLowerCase().slice(0, 100));
 
+  // title: accepted only when it comes from parsed HTML metadata (Firecrawl
+  // ogTitle / <title>). The AI extraction schema intentionally omits title
+  // because the article's title must never be AI-rewritten.
   const metadata = {
     title: sanitizeMetadataString(value.title, 500),
     headline: sanitizeMetadataString(value.headline, 500),

@@ -72,7 +72,10 @@ export async function resolveArticleContent(env, storyId, { title = "", text = "
       }
       log.info({ event: "resolve_article_hit", storyId: numericStoryId, sourceKind: "crawl", textLength: crawledText.length });
       return {
-        title: crawlResult.metadata?.title || normalizedTitle,
+        // Prefer the caller-supplied (RSS) title; fall back to parsed HTML
+        // metadata (e.g. Firecrawl og:title / <title>). Never AI-rewritten —
+        // the AI extraction schema intentionally omits the title field.
+        title: normalizedTitle || crawlResult.metadata?.title || "",
         text: crawledText,
         url: resolvedUrl,
         sourceKind: "crawl",

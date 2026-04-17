@@ -389,7 +389,7 @@ export async function processMediaMessage(batch, env, ctx = null) {
         log.warn({ event: "rss_item_crawl_failure_clear_fail", storyId, ...log.fmtError(err) });
       }
 
-      const title = crawlMetadata?.title ?? body.title ?? "Story";
+      const title = body.title ?? null;
       const extractedText = resolvedArticle.text || fallbackText;
       const sourceKind = resolvedArticle.sourceKind ?? (body.url ? "article" : "hn_text");
       if (resolvedArticle.sourceKind === "crawl") {

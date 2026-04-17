@@ -39,7 +39,7 @@ test("upsertItem sends item rows to the Shaped insert endpoint", async () => {
           media_type: null,
           media_provider: null,
           media_model: null,
-          prompt_template_id: null
+          optimizer_config_id: null
         }
       ]
     });

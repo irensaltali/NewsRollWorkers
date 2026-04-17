@@ -1283,7 +1283,7 @@ async function resolveAdminTestContent(env, body, { persistCrawlResult = true } 
     cfFailureKind = task.cfFailureKind ?? null;
     sourceUrl = task.url || sourceUrl || null;
     sourceKind = "crawl";
-    title = crawlMetadata?.title || body.title || "";
+    title = body.title || crawlMetadata?.title || "";
 
     return {
       title,
@@ -1314,7 +1314,7 @@ async function resolveAdminTestContent(env, body, { persistCrawlResult = true } 
         articleText = crawlResult.markdown;
         sourceKind = "crawl";
         crawlMetadata = crawlResult.metadata ?? null;
-        title = crawlMetadata?.title || body.title || "";
+        title = body.title || crawlMetadata?.title || "";
       } else {
         throw Object.assign(new Error(forceFirecrawl ? "Firecrawl failed" : "Recrawl failed"), {
           status: 422,
@@ -1364,7 +1364,7 @@ async function resolveAdminTestContent(env, body, { persistCrawlResult = true } 
       articleText = crawlResult.markdown;
       sourceKind = "crawl";
       crawlMetadata = crawlResult.metadata ?? null;
-      title = crawlMetadata?.title || body.title || "";
+      title = body.title || crawlMetadata?.title || "";
     } else {
       throw Object.assign(new Error("Crawl failed"), {
         status: 422,
@@ -1372,7 +1372,7 @@ async function resolveAdminTestContent(env, body, { persistCrawlResult = true } 
       });
     }
   } else {
-    title = body.title || "";
+    title = body.title || crawlMetadata?.title || "";
     articleText = body.text || "";
     sourceKind = "provided";
   }
@@ -2280,7 +2280,7 @@ async function handleAdminMediaSave(request, env) {
     const mediaUrl = publicMediaUrlFor(env, mediaKey);
     const crawlMetadata = manifest.crawlMetadata && typeof manifest.crawlMetadata === "object"
       ? manifest.crawlMetadata : null;
-    const headline = crawlMetadata?.headline || manifest.title || null;
+    const headline = crawlMetadata?.headline || null;
     const summary = crawlMetadata?.summary ?? null;
     const topics = Array.isArray(crawlMetadata?.topics) ? crawlMetadata.topics : null;
     const sourceUrl = normalizeText(manifest.sourceUrl) || null;

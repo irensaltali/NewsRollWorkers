@@ -51,13 +51,17 @@ export async function upsertItem(env, item) {
     return { ok: true };
   }
   try {
+    const normalizedTitle = normalizeString(item.title);
+    const normalizedHeadline = normalizeString(item.headline);
     const shapedItem = {
       item_id: String(item.storyId),
       created_at: item.publishedAt ?? new Date().toISOString(),
       updated_at: new Date().toISOString(),
-      // headline: AI-extracted; title: RSS original — Shaped uses COALESCE(headline, title) for embeddings
-      headline: item.headline ?? item.title ?? null,
-      title: item.title ?? null,
+      // title: article's original title, verbatim from RSS/source (author-given, never AI-rewritten)
+      // headline: AI-generated 2-sentence curiosity teaser (distinct from title)
+      // Shaped uses COALESCE(headline, title) for embeddings when headline is missing
+      headline: normalizedHeadline ?? normalizedTitle,
+      title: normalizedTitle,
       summary: normalizeString(item.summary),
       category: normalizeString(item.category),
       topics: normalizeTopics(item.topics),

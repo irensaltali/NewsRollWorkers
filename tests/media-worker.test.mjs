@@ -66,19 +66,21 @@ test("article metadata json options use the expected schema contract", () => {
   assert.equal(jsonOptions.response_format.json_schema.schema.additionalProperties, false);
   assert.deepEqual(
     jsonOptions.response_format.json_schema.schema.required,
-    ["title", "headline", "language", "summary", "topics"]
+    ["headline", "language", "summary", "topics"]
   );
 });
 
 test("normalizeArticleMetadata trims and normalizes crawl metadata", () => {
+  // title accepted from parsed HTML metadata (Firecrawl og:title / <title>);
+  // AI extraction path won't populate it because it's not in the schema.
   assert.deepEqual(normalizeArticleMetadata({
     title: "  Example Title  ",
-    headline: "  Three sentence summary.  ",
+    headline: "  Two sentence curiosity teaser.  ",
     language: " EN ",
     summary: "  Summary body.  "
   }), {
     title: "Example Title",
-    headline: "Three sentence summary.",
+    headline: "Two sentence curiosity teaser.",
     language: "en",
     summary: "Summary body.",
     topics: null
@@ -171,7 +173,6 @@ test("crawlUrl submits and polls the Cloudflare crawl API", async (t) => {
               status: "completed",
               markdown: "# Crawled\n\nStory body",
               json: {
-                title: "Crawled title",
                 headline: "Crawled hook.",
                 language: "en",
                 summary: "Crawled summary."
@@ -198,7 +199,7 @@ test("crawlUrl submits and polls the Cloudflare crawl API", async (t) => {
   assert.equal(result.success, true);
   assert.equal(result.markdown, "# Crawled\n\nStory body");
   assert.deepEqual(result.metadata, {
-    title: "Crawled title",
+    title: null,
     headline: "Crawled hook.",
     language: "en",
     summary: "Crawled summary.",
