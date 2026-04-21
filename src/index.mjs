@@ -702,15 +702,47 @@ async function handleVisualFeed(request, env) {
 
     if (shaped.results.length > 0) {
       const enriched = await getPublishedFeedEntriesByStoryIds(env, shaped.results.map((r) => r.id));
-      const nextCursor = shaped.paginationKey && shaped.results.length >= limit ? shaped.paginationKey : null;
-      return json(
-        {
-          cursor: cursorRaw ?? null,
-          nextCursor,
-          items: enriched.map((row) => toVisualFeedItem(env, row))
-        },
-        { headers: { "cache-control": "private, max-age=30" } }
-      );
+      const shapedCount = shaped.results.length;
+      const enrichedCount = enriched.length;
+      const dropped = shapedCount - enrichedCount;
+
+      // Fall through to the global feed when Shaped's catalog has drifted from
+      // published_feed_entries and we can't assemble a reasonable page. Without
+      // this, the app can receive a tiny list (e.g. 1 item) with nextCursor=null
+      // and treat the feed as ended.
+      const minEnrichedCount = Math.min(5, Math.ceil(limit / 2));
+      if (enrichedCount < minEnrichedCount) {
+        log.warn({
+          event: "visual_feed_shaped_enrichment_low",
+          userId: user.userId,
+          shapedCount,
+          enrichedCount,
+          dropped,
+          limit,
+          minEnrichedCount,
+          action: "fallthrough_to_global"
+        });
+      } else {
+        if (dropped > 0) {
+          log.info({
+            event: "visual_feed_shaped_enrichment_dropped",
+            userId: user.userId,
+            shapedCount,
+            enrichedCount,
+            dropped,
+            limit
+          });
+        }
+        const nextCursor = shaped.paginationKey && shapedCount >= limit ? shaped.paginationKey : null;
+        return json(
+          {
+            cursor: cursorRaw ?? null,
+            nextCursor,
+            items: enriched.map((row) => toVisualFeedItem(env, row))
+          },
+          { headers: { "cache-control": "private, max-age=30" } }
+        );
+      }
     }
   }
 
