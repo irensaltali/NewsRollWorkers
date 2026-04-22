@@ -30,7 +30,7 @@ test("headline request uses chat completions token field", async () => {
   const request = await buildHeadlineRequest("Launch post", "Some extracted article text.");
 
   assert.equal(request.model, "gpt-5.4-mini-2026-03-17");
-  assert.equal(request.max_completion_tokens, 150);
+  assert.equal(request.max_completion_tokens, 80);
   assert.equal("max_output_tokens" in request, false);
   assert.equal(request.messages[1].content.includes("Launch post"), true);
 });

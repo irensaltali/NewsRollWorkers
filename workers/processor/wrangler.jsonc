@@ -22,13 +22,12 @@
 		}
 	],
 	"vars": {
-		"APP_NAME": "NewsRoll Processor",
 		"ENVIRONMENT": "production",
 		"CLOUDFLARE_ACCOUNT_ID": "ccbc9926d08a298aee2a4f0cffcfc4a3",
 		"PUBLIC_API_BASE_URL": "https://api.newsroll.app",
 		"PUBLIC_MEDIA_BASE_URL": "https://media.newsroll.app",
 		"SUPABASE_URL": "https://snazihvdznshybaogwrx.supabase.co",
-		"MEDIA_FALAI_LIMIT": "10"
+		"MEDIA_FALAI_LIMIT": "50"
 	},
 	"durable_objects": {
 		"bindings": [

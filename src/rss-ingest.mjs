@@ -6,8 +6,16 @@ import {
   releaseMediaQueueSlot,
   getRSSSources,
   insertRSSItem,
-  markSourceFetched
+  markSourceFetched,
+  upsertCrawlState
 } from "./db.mjs";
+import { submitCrawlWithProviderFallback } from "./crawl-provider.mjs";
+import {
+  crawlDeadlineFor,
+  descriptionIsSufficient,
+  descriptionIsUsableFallback,
+  nextPollDelaySeconds
+} from "./crawl-scheduler.mjs";
 
 const RSS_MEDIA_QUALITY_THRESHOLD = 0.40;
 const RSS_FETCH_TIMEOUT_MS = 10_000;
@@ -114,8 +122,21 @@ export async function fetchAndParseRSS(feedUrl) {
   if (!resp.ok) {
     throw new Error(`RSS fetch failed: HTTP ${resp.status} for ${feedUrl}`);
   }
+  const contentType = resp.headers?.get?.("content-type") ?? "";
+  if (/html/i.test(contentType) && !/xml/i.test(contentType)) {
+    throw new Error(`RSS fetch failed: non-XML content-type '${contentType}' for ${feedUrl}`);
+  }
   const xml = await resp.text();
-  return parseRSS(xml);
+  const items = parseRSS(xml);
+  if (items.length === 0 && xml.length > 1024) {
+    log.warn({
+      event: "rss_parse_empty",
+      feedUrl,
+      bytes: xml.length,
+      bodyPrefix: xml.slice(0, 200)
+    });
+  }
+  return items;
 }
 
 // ── Quality scoring ───────────────────────────────────────────────────────────
@@ -155,6 +176,105 @@ function normalizeRemainingQueueBudget(value) {
 }
 
 // ── Core ingestion ────────────────────────────────────────────────────────────
+
+// Route a freshly-stored RSS item to the media queue. Returns true when a
+// message was enqueued (caller increments its `queued` tally) and false when
+// we had to release the reserved slot without dispatching.
+async function dispatchItemToQueue(env, { storyId, item, endpoint, sourceName }) {
+  const basePayload = {
+    storyId,
+    endpoint,
+    url: item.url ?? null,
+    title: item.title ?? "",
+    publishedAt: item.publishedAt
+      ? new Date(item.publishedAt).toISOString()
+      : null
+  };
+
+  // Fast path: RSS description is already long enough to generate media from.
+  if (descriptionIsSufficient(item)) {
+    try {
+      await env.MEDIA_QUEUE.send({ kind: "media_generate", ...basePayload });
+      log.debug({ event: "rss_queued_media", storyId, source: sourceName, path: "sufficient_description" });
+      return true;
+    } catch (err) {
+      await releaseMediaQueueSlot(env, storyId);
+      log.warn({ event: "rss_queue_fail", storyId, ...log.fmtError(err) });
+      return false;
+    }
+  }
+
+  // Thin description + URL: kick off an async crawl and follow up via crawl_check.
+  if (item.url) {
+    const submitted = await submitCrawlWithProviderFallback(env, item.url, { storyId });
+    if (submitted.success) {
+      const now = new Date();
+      const deadline = crawlDeadlineFor(submitted.provider, now);
+      await upsertCrawlState(env, {
+        storyId,
+        provider: submitted.provider,
+        jobId: submitted.jobId,
+        submittedAt: now.toISOString(),
+        deadline: deadline.toISOString()
+      });
+
+      try {
+        await env.MEDIA_QUEUE.send(
+          {
+            kind: "crawl_check",
+            ...basePayload,
+            crawlJobId: submitted.jobId,
+            crawlProvider: submitted.provider,
+            crawlAttempts: 0
+          },
+          { delaySeconds: nextPollDelaySeconds(0) }
+        );
+        log.debug({
+          event: "rss_queued_crawl_check",
+          storyId,
+          source: sourceName,
+          provider: submitted.provider,
+          jobId: submitted.jobId
+        });
+        return true;
+      } catch (err) {
+        await releaseMediaQueueSlot(env, storyId);
+        log.warn({ event: "rss_queue_fail", storyId, ...log.fmtError(err) });
+        return false;
+      }
+    }
+
+    log.warn({
+      event: "rss_crawl_submit_failed",
+      storyId,
+      source: sourceName,
+      cfError: submitted.cfError,
+      error: submitted.error
+    });
+  }
+
+  // All submit paths failed (or item had no URL). Fall back to whatever
+  // description we already have if it is long enough to be usable.
+  if (descriptionIsUsableFallback(item)) {
+    try {
+      await env.MEDIA_QUEUE.send({
+        kind: "media_generate",
+        ...basePayload,
+        fallbackReason: "crawl_submit_failed"
+      });
+      log.info({ event: "rss_queued_media", storyId, source: sourceName, path: "description_fallback" });
+      return true;
+    } catch (err) {
+      await releaseMediaQueueSlot(env, storyId);
+      log.warn({ event: "rss_queue_fail", storyId, ...log.fmtError(err) });
+      return false;
+    }
+  }
+
+  await releaseMediaQueueSlot(env, storyId);
+  log.warn({ event: "rss_crawl_skipped_no_fallback", storyId, source: sourceName });
+  return false;
+}
 
 export async function ingestSource(env, source, { remainingQueueBudget = Number.POSITIVE_INFINITY } = {}) {
   let items;
@@ -259,19 +379,13 @@ export async function ingestSource(env, source, { remainingQueueBudget = Number.
         continue;
       }
 
-      try {
-        await env.MEDIA_QUEUE.send({
-          storyId,
-          endpoint: source.category,
-          url: item.url,
-          title: item.title
-        });
-        queued++;
-        log.debug({ event: "rss_queued", storyId, source: source.name });
-      } catch (err) {
-        await releaseMediaQueueSlot(env, storyId);
-        log.warn({ event: "rss_queue_fail", storyId, ...log.fmtError(err) });
-      }
+      const dispatched = await dispatchItemToQueue(env, {
+        storyId,
+        item,
+        endpoint: source.category,
+        sourceName: source.name
+      });
+      if (dispatched) queued++;
     } catch (err) {
       log.warn({
         event: "rss_item_fail",

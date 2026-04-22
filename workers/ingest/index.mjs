@@ -17,6 +17,8 @@ export default {
     const start = Date.now();
     log.info({ event: "cron_start", cron: controller.cron, categories: FEED_CATEGORIES.length });
 
+    const totals = { sources: 0, fetched: 0, stored: 0, queued: 0 };
+
     if (controller.cron === "*/5 * * * *") {
       let remainingMediaBudget = mediaPerRunLimit(env);
       for (const category of FEED_CATEGORIES) {
@@ -26,6 +28,10 @@ export default {
         }
         try {
           const result = await ingestStories(env, category, { remainingQueueBudget: remainingMediaBudget });
+          totals.sources += Number(result?.sources ?? 0);
+          totals.fetched += Number(result?.fetched ?? 0);
+          totals.stored += Number(result?.stored ?? 0);
+          totals.queued += Number(result?.queued ?? 0);
           remainingMediaBudget = Math.max(0, remainingMediaBudget - Number(result?.queued ?? 0));
         } catch (err) {
           log.error({ event: "cron_category_fail", cron: controller.cron, category, ...log.fmtError(err) });
@@ -54,6 +60,12 @@ export default {
       log.error({ event: "stale_media_cleanup_fail", ...log.fmtError(err) });
     }
 
+    log.info({
+      event: "cron_ingest_summary",
+      cron: controller.cron,
+      durationMs: Date.now() - start,
+      ...totals
+    });
     log.info({ event: "cron_complete", cron: controller.cron, durationMs: Date.now() - start });
   }
 };

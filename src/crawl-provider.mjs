@@ -1,6 +1,16 @@
 import { crawlUrl, crawlUrlWithAI, submitCrawlJob, checkCrawlJobStatus } from "./browser-rendering.mjs";
-import { isFirecrawlConfigured, firecrawlScrapeUrl } from "./firecrawl.mjs";
+import {
+  isFirecrawlConfigured,
+  firecrawlScrapeUrl,
+  submitFirecrawlJob,
+  checkFirecrawlJob
+} from "./firecrawl.mjs";
 import * as log from "./log.mjs";
+
+export const CRAWL_PROVIDERS = Object.freeze({
+  CLOUDFLARE: "cloudflare",
+  FIRECRAWL: "firecrawl"
+});
 
 // ── Fallback Decision ────────────────────────────────────────────────
 
@@ -119,7 +129,89 @@ export async function crawlWithFallbackAI(env, url, { storyId = null, limit, pro
   return { ...cfResult, crawlProvider: "cloudflare" };
 }
 
-// ── Async Job Wrappers ───────────────────────────────────────────────
+// ── Unified Provider-Agnostic Async API ──────────────────────────────
+
+export async function submitCrawl(env, provider, url) {
+  if (provider === CRAWL_PROVIDERS.CLOUDFLARE) {
+    return submitCrawlJob(env, url);
+  }
+  if (provider === CRAWL_PROVIDERS.FIRECRAWL) {
+    return submitFirecrawlJob(env, url);
+  }
+  return { jobId: null, success: false, error: `Unknown crawl provider: ${provider}`, failureKind: "config_error" };
+}
+
+// Submit-phase failures never indicate a permanent origin block (we haven't
+// crawled yet), so any CF submit error should try Firecrawl when configured.
+export async function submitCrawlWithProviderFallback(env, url, { storyId = null } = {}) {
+  const cf = await submitCrawl(env, CRAWL_PROVIDERS.CLOUDFLARE, url);
+  if (cf.success) {
+    return {
+      success: true,
+      provider: CRAWL_PROVIDERS.CLOUDFLARE,
+      jobId: cf.jobId,
+      error: null,
+      cfError: null
+    };
+  }
+
+  if (!isFirecrawlConfigured(env)) {
+    return {
+      success: false,
+      provider: CRAWL_PROVIDERS.CLOUDFLARE,
+      jobId: null,
+      error: cf.error ?? null,
+      cfError: cf.error ?? null
+    };
+  }
+
+  log.info({
+    event: "crawl_submit_fallback_triggered",
+    url,
+    storyId,
+    cfError: cf.error,
+    provider: CRAWL_PROVIDERS.FIRECRAWL
+  });
+
+  const fc = await submitCrawl(env, CRAWL_PROVIDERS.FIRECRAWL, url);
+  if (fc.success) {
+    log.info({ event: "crawl_submit_fallback_success", url, storyId, provider: CRAWL_PROVIDERS.FIRECRAWL });
+    return {
+      success: true,
+      provider: CRAWL_PROVIDERS.FIRECRAWL,
+      jobId: fc.jobId,
+      error: null,
+      cfError: cf.error ?? null
+    };
+  }
+
+  log.warn({
+    event: "crawl_submit_all_providers_failed",
+    url,
+    storyId,
+    cfError: cf.error,
+    fcError: fc.error
+  });
+  return {
+    success: false,
+    provider: CRAWL_PROVIDERS.FIRECRAWL,
+    jobId: null,
+    error: fc.error ?? null,
+    cfError: cf.error ?? null
+  };
+}
+
+export async function checkCrawl(env, provider, jobId) {
+  if (provider === CRAWL_PROVIDERS.CLOUDFLARE) {
+    return checkCrawlJobStatus(env, jobId);
+  }
+  if (provider === CRAWL_PROVIDERS.FIRECRAWL) {
+    return checkFirecrawlJob(env, jobId);
+  }
+  return { status: "failed", error: `Unknown crawl provider: ${provider}`, failureKind: "config_error" };
+}
+
+// ── Async Job Wrappers (legacy) ──────────────────────────────────────
 
 export async function submitCrawlJobWithTracking(env, url) {
   return submitCrawlJob(env, url);

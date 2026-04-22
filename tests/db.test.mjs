@@ -2,13 +2,19 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import {
+  appendCrawlError,
+  clearCrawlState,
   clearRSSItemCrawlFailure,
   getImagePromptOptimizerConfig,
+  incrementCrawlPollCount,
+  insertRSSItem,
   markRSSItemCrawlFailure,
   resolveImagePromptOptimizerConfig,
+  selectCrawlState,
   storeReadableContent,
   storeStoryExplanation,
-  storeStorySummary
+  storeStorySummary,
+  upsertCrawlState
 } from "../src/db.mjs";
 
 test("storeReadableContent persists source and feed URLs when provided", async () => {
@@ -150,6 +156,136 @@ test("storeStoryExplanation persists a formatted explanation snapshot", async ()
     });
   } finally {
     globalThis.fetch = originalFetch;
+  }
+});
+
+test("insertRSSItem returns true when Supabase accepts the insert", async () => {
+  const env = {
+    SUPABASE_URL: "https://example.supabase.co",
+    SUPABASE_SECRET_KEY: "service-role-test"
+  };
+
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (input) => {
+    const url = typeof input === "string" ? input : input.url;
+    if (url.includes("/rest/v1/rss_items")) {
+      return new Response("", { status: 201 });
+    }
+    throw new Error(`Unexpected fetch: ${url}`);
+  };
+
+  try {
+    const inserted = await insertRSSItem(env, {
+      storyId: 1,
+      sourceId: 2,
+      guid: "new-guid",
+      url: "https://example.com/a",
+      canonicalUrl: "https://example.com/a",
+      title: "Title",
+      description: "Desc",
+      author: null,
+      publishedAt: "2026-04-02T00:00:00Z"
+    });
+    assert.equal(inserted, true);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("insertRSSItem returns false on 23505 unique-violation duplicates", async () => {
+  const env = {
+    SUPABASE_URL: "https://example.supabase.co",
+    SUPABASE_SECRET_KEY: "service-role-test"
+  };
+
+  const originalFetch = globalThis.fetch;
+  const originalWarn = console.warn;
+  const warnings = [];
+  console.warn = (line) => warnings.push(line);
+
+  globalThis.fetch = async (input) => {
+    const url = typeof input === "string" ? input : input.url;
+    if (url.includes("/rest/v1/rss_items")) {
+      return new Response(JSON.stringify({
+        code: "23505",
+        message: "duplicate key value violates unique constraint \"rss_items_source_id_guid_key\""
+      }), {
+        status: 409,
+        headers: { "content-type": "application/json" }
+      });
+    }
+    throw new Error(`Unexpected fetch: ${url}`);
+  };
+
+  try {
+    const inserted = await insertRSSItem(env, {
+      storyId: 1,
+      sourceId: 2,
+      guid: "existing-guid",
+      url: "https://example.com/a",
+      canonicalUrl: "https://example.com/a",
+      title: "Title",
+      description: null,
+      author: null,
+      publishedAt: null
+    });
+    assert.equal(inserted, false);
+    const loggedFail = warnings
+      .map((w) => JSON.parse(w))
+      .find((p) => p.event === "rss_item_insert_fail");
+    assert.equal(loggedFail, undefined, "duplicates should not log rss_item_insert_fail");
+  } finally {
+    globalThis.fetch = originalFetch;
+    console.warn = originalWarn;
+  }
+});
+
+test("insertRSSItem warns and returns false on unexpected errors", async () => {
+  const env = {
+    SUPABASE_URL: "https://example.supabase.co",
+    SUPABASE_SECRET_KEY: "service-role-test"
+  };
+
+  const originalFetch = globalThis.fetch;
+  const originalWarn = console.warn;
+  const warnings = [];
+  console.warn = (line) => warnings.push(line);
+
+  globalThis.fetch = async (input) => {
+    const url = typeof input === "string" ? input : input.url;
+    if (url.includes("/rest/v1/rss_items")) {
+      return new Response(JSON.stringify({
+        code: "42P01",
+        message: "relation \"rss_items\" does not exist"
+      }), {
+        status: 500,
+        headers: { "content-type": "application/json" }
+      });
+    }
+    throw new Error(`Unexpected fetch: ${url}`);
+  };
+
+  try {
+    const inserted = await insertRSSItem(env, {
+      storyId: 1,
+      sourceId: 2,
+      guid: "boom",
+      url: "https://example.com/a",
+      canonicalUrl: "https://example.com/a",
+      title: "Title",
+      description: null,
+      author: null,
+      publishedAt: null
+    });
+    assert.equal(inserted, false);
+    const loggedFail = warnings
+      .map((w) => JSON.parse(w))
+      .find((p) => p.event === "rss_item_insert_fail");
+    assert.ok(loggedFail, "expected rss_item_insert_fail warning for unexpected errors");
+    assert.equal(loggedFail.code, "42P01");
+  } finally {
+    globalThis.fetch = originalFetch;
+    console.warn = originalWarn;
   }
 });
 
@@ -319,6 +455,191 @@ test("getImagePromptOptimizerConfig can choose a random active config", async ()
   } finally {
     globalThis.fetch = originalFetch;
     Math.random = originalRandom;
+  }
+});
+
+// ── Crawl state helpers ──────────────────────────────────────────────
+
+test("selectCrawlState returns null when SUPABASE_URL is absent", async () => {
+  assert.equal(await selectCrawlState({}, 123), null);
+});
+
+test("selectCrawlState maps snake_case row into camelCase crawl state", async () => {
+  const env = {
+    SUPABASE_URL: "https://example.supabase.co",
+    SUPABASE_SECRET_KEY: "service-role-test"
+  };
+
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (input) => {
+    const url = typeof input === "string" ? input : input.url;
+    if (url.includes("/rest/v1/story_media")) {
+      return new Response(JSON.stringify({
+        story_id: 123,
+        status: "queued",
+        crawl_provider: "firecrawl",
+        crawl_job_id: "fc-job-xyz",
+        crawl_submitted_at: "2026-04-21T12:00:00Z",
+        crawl_poll_count: 3,
+        crawl_deadline: "2026-04-21T12:10:00Z",
+        crawl_errors: [{ provider: "cloudflare", error: "timeout", at: "2026-04-21T12:01:00Z" }]
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    }
+    throw new Error(`Unexpected fetch: ${url}`);
+  };
+
+  try {
+    const state = await selectCrawlState(env, 123);
+    assert.deepEqual(state, {
+      storyId: 123,
+      status: "queued",
+      crawlProvider: "firecrawl",
+      crawlJobId: "fc-job-xyz",
+      crawlSubmittedAt: "2026-04-21T12:00:00Z",
+      crawlPollCount: 3,
+      crawlDeadline: "2026-04-21T12:10:00Z",
+      crawlErrors: [{ provider: "cloudflare", error: "timeout", at: "2026-04-21T12:01:00Z" }]
+    });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("upsertCrawlState posts a queued row with crawl metadata", async () => {
+  const env = {
+    SUPABASE_URL: "https://example.supabase.co",
+    SUPABASE_SECRET_KEY: "service-role-test"
+  };
+
+  let storyMediaBody = null;
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (input, init) => {
+    const url = typeof input === "string" ? input : input.url;
+    if (url.includes("/rest/v1/story_media")) {
+      storyMediaBody = JSON.parse(init.body);
+      return new Response(JSON.stringify([storyMediaBody]), {
+        status: 201,
+        headers: { "content-type": "application/json" }
+      });
+    }
+    throw new Error(`Unexpected fetch: ${url}`);
+  };
+
+  try {
+    await upsertCrawlState(env, {
+      storyId: 123,
+      provider: "cloudflare",
+      jobId: "cf-job-abc",
+      submittedAt: "2026-04-21T12:00:00Z",
+      deadline: "2026-04-21T12:08:00Z"
+    });
+
+    assert.equal(storyMediaBody.story_id, 123);
+    assert.equal(storyMediaBody.status, "queued");
+    assert.equal(storyMediaBody.attempts, 0);
+    assert.equal(storyMediaBody.crawl_provider, "cloudflare");
+    assert.equal(storyMediaBody.crawl_job_id, "cf-job-abc");
+    assert.equal(storyMediaBody.crawl_submitted_at, "2026-04-21T12:00:00Z");
+    assert.equal(storyMediaBody.crawl_deadline, "2026-04-21T12:08:00Z");
+    assert.equal(storyMediaBody.crawl_poll_count, 0);
+    assert.match(storyMediaBody.updated_at, /^\d{4}-\d{2}-\d{2}T/);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("incrementCrawlPollCount calls the increment RPC and returns the new count", async () => {
+  const env = {
+    SUPABASE_URL: "https://example.supabase.co",
+    SUPABASE_SECRET_KEY: "service-role-test"
+  };
+
+  let rpcBody = null;
+  let rpcUrl = null;
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (input, init) => {
+    const url = typeof input === "string" ? input : input.url;
+    if (url.includes("/rest/v1/rpc/increment_crawl_poll_count")) {
+      rpcUrl = url;
+      rpcBody = JSON.parse(init.body);
+      return new Response(JSON.stringify(4), {
+        status: 200,
+        headers: { "content-type": "application/json" }
+      });
+    }
+    throw new Error(`Unexpected fetch: ${url}`);
+  };
+
+  try {
+    const next = await incrementCrawlPollCount(env, 123);
+    assert.equal(next, 4);
+    assert.ok(rpcUrl);
+    assert.deepEqual(rpcBody, { p_story_id: 123 });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("appendCrawlError calls the append RPC with a structured entry", async () => {
+  const env = {
+    SUPABASE_URL: "https://example.supabase.co",
+    SUPABASE_SECRET_KEY: "service-role-test"
+  };
+
+  let rpcBody = null;
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (input, init) => {
+    const url = typeof input === "string" ? input : input.url;
+    if (url.includes("/rest/v1/rpc/append_crawl_error")) {
+      rpcBody = JSON.parse(init.body);
+      return new Response("", { status: 204 });
+    }
+    throw new Error(`Unexpected fetch: ${url}`);
+  };
+
+  try {
+    await appendCrawlError(env, 456, { provider: "cloudflare", error: "HTTP 503" });
+    assert.equal(rpcBody.p_story_id, 456);
+    assert.equal(rpcBody.p_entry.provider, "cloudflare");
+    assert.equal(rpcBody.p_entry.error, "HTTP 503");
+    assert.match(rpcBody.p_entry.at, /^\d{4}-\d{2}-\d{2}T/);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("clearCrawlState nulls crawl columns on the story_media row", async () => {
+  const env = {
+    SUPABASE_URL: "https://example.supabase.co",
+    SUPABASE_SECRET_KEY: "service-role-test"
+  };
+
+  let patchBody = null;
+  let patchUrl = null;
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (input, init) => {
+    const url = typeof input === "string" ? input : input.url;
+    if (url.includes("/rest/v1/story_media")) {
+      patchUrl = url;
+      patchBody = JSON.parse(init.body);
+      return new Response(JSON.stringify([patchBody]), {
+        status: 200,
+        headers: { "content-type": "application/json" }
+      });
+    }
+    throw new Error(`Unexpected fetch: ${url}`);
+  };
+
+  try {
+    await clearCrawlState(env, 789);
+    assert.ok(patchUrl.includes("story_id=eq.789"));
+    assert.equal(patchBody.crawl_provider, null);
+    assert.equal(patchBody.crawl_job_id, null);
+    assert.equal(patchBody.crawl_submitted_at, null);
+    assert.equal(patchBody.crawl_deadline, null);
+    assert.equal(patchBody.crawl_poll_count, 0);
+  } finally {
+    globalThis.fetch = originalFetch;
   }
 });
 

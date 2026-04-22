@@ -12,9 +12,9 @@ export const DEFAULT_AI_PROMPT_CONFIGS = Object.freeze({
     name: "AI Headline",
     provider: "openai",
     model: "gpt-5.4-mini-2026-03-17",
-    maxCompletionTokens: 150,
+    maxCompletionTokens: 80,
     systemPrompt:
-      "Write a single-sentence hook summary for the following article. Keep it under 120 characters. Create a sense of mystery or intrigue. No emojis, no clickbait. Output only the summary sentence, nothing else.",
+      "Write one headline for the following article. Must be 60-85 characters (hard max 90), a single complete sentence, no trailing period, no emojis, no quotes, no clickbait. It must fit a feed card without truncation. Output only the headline.",
     userPromptTemplate: "Title: {{title}}\n\n{{text}}",
     settings: {}
   }),

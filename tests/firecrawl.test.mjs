@@ -6,7 +6,9 @@ import {
   isFirecrawlConfigured,
   selectNextKey,
   mapFirecrawlMetadata,
-  firecrawlScrapeUrl
+  firecrawlScrapeUrl,
+  submitFirecrawlJob,
+  checkFirecrawlJob
 } from "../src/firecrawl.mjs";
 
 // ── parseFirecrawlApiKeys ────────────────────────────────────────────
@@ -222,4 +224,141 @@ test("firecrawlScrapeUrl handles API error responses", async () => {
   } finally {
     globalThis.fetch = originalFetch;
   }
+});
+
+// ── submitFirecrawlJob ───────────────────────────────────────────────
+
+test("submitFirecrawlJob returns config_error when no keys configured", async () => {
+  const result = await submitFirecrawlJob({}, "https://example.com");
+  assert.equal(result.success, false);
+  assert.equal(result.failureKind, "config_error");
+  assert.equal(result.jobId, null);
+});
+
+test("submitFirecrawlJob posts to v2 batch endpoint with the first key", async () => {
+  const originalFetch = globalThis.fetch;
+  let seenAuth = null;
+  let seenBody = null;
+  let seenUrl = null;
+  try {
+    globalThis.fetch = async (url, init) => {
+      seenUrl = String(url);
+      seenAuth = init.headers.Authorization ?? init.headers.authorization;
+      seenBody = JSON.parse(init.body);
+      return Response.json({ success: true, id: "fc-job-xyz" });
+    };
+
+    const env = { FIRECRAWL_API_KEYS: "fc-first,fc-second" };
+    const result = await submitFirecrawlJob(env, "https://example.com/article");
+
+    assert.equal(seenUrl, "https://api.firecrawl.dev/v2/batch/scrape");
+    assert.equal(seenAuth, "Bearer fc-first");
+    assert.deepEqual(seenBody.urls, ["https://example.com/article"]);
+    assert.deepEqual(seenBody.formats, ["markdown"]);
+    assert.equal(seenBody.onlyMainContent, true);
+    assert.equal(result.success, true);
+    assert.equal(result.jobId, "fc-job-xyz");
+    assert.equal(result.failureKind, null);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("submitFirecrawlJob reports http_error when the API rejects the request", async () => {
+  const originalFetch = globalThis.fetch;
+  try {
+    globalThis.fetch = async () => new Response(JSON.stringify({ error: "bad" }), { status: 400 });
+
+    const env = { FIRECRAWL_API_KEYS: "fc-test" };
+    const result = await submitFirecrawlJob(env, "https://example.com");
+
+    assert.equal(result.success, false);
+    assert.equal(result.failureKind, "http_error");
+    assert.equal(result.jobId, null);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+// ── checkFirecrawlJob ────────────────────────────────────────────────
+
+test("checkFirecrawlJob returns running while the job is scraping", async () => {
+  const originalFetch = globalThis.fetch;
+  try {
+    globalThis.fetch = async () => Response.json({ status: "scraping" });
+
+    const env = { FIRECRAWL_API_KEYS: "fc-test" };
+    const result = await checkFirecrawlJob(env, "fc-job-xyz");
+
+    assert.equal(result.status, "running");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("checkFirecrawlJob returns markdown and metadata on completion", async () => {
+  const originalFetch = globalThis.fetch;
+  let seenUrl = null;
+  try {
+    globalThis.fetch = async (url) => {
+      seenUrl = String(url);
+      return Response.json({
+        status: "completed",
+        data: [{
+          markdown: "# Completed\n\nArticle body.",
+          metadata: { title: "Completed", description: "desc", language: "en" }
+        }]
+      });
+    };
+
+    const env = { FIRECRAWL_API_KEYS: "fc-test" };
+    const result = await checkFirecrawlJob(env, "fc-job-xyz");
+
+    assert.equal(seenUrl, "https://api.firecrawl.dev/v2/batch/scrape/fc-job-xyz");
+    assert.equal(result.status, "completed");
+    assert.equal(result.markdown, "# Completed\n\nArticle body.");
+    assert.equal(result.metadata?.title, "Completed");
+    assert.equal(result.failureKind, null);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("checkFirecrawlJob reports no_content when completion has no markdown", async () => {
+  const originalFetch = globalThis.fetch;
+  try {
+    globalThis.fetch = async () => Response.json({
+      status: "completed",
+      data: [{ metadata: { title: "x" } }]
+    });
+
+    const env = { FIRECRAWL_API_KEYS: "fc-test" };
+    const result = await checkFirecrawlJob(env, "fc-job-xyz");
+
+    assert.equal(result.status, "failed");
+    assert.equal(result.failureKind, "no_content");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("checkFirecrawlJob maps failed status to http_error", async () => {
+  const originalFetch = globalThis.fetch;
+  try {
+    globalThis.fetch = async () => Response.json({ status: "failed" });
+
+    const env = { FIRECRAWL_API_KEYS: "fc-test" };
+    const result = await checkFirecrawlJob(env, "fc-job-xyz");
+
+    assert.equal(result.status, "failed");
+    assert.equal(result.failureKind, "http_error");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("checkFirecrawlJob returns config_error when no keys configured", async () => {
+  const result = await checkFirecrawlJob({}, "fc-job-xyz");
+  assert.equal(result.status, "failed");
+  assert.equal(result.failureKind, "config_error");
 });

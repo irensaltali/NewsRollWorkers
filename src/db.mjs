@@ -611,6 +611,82 @@ export async function releaseMediaQueueSlot(env, storyId) {
     .eq("attempts", 0);
 }
 
+// ── Crawl state tracking on story_media ──────────────────────────────────────
+
+export async function selectCrawlState(env, storyId) {
+  if (!hasDB(env)) return null;
+
+  const { data } = await getDB(env)
+    .from("story_media")
+    .select("story_id, status, crawl_provider, crawl_job_id, crawl_submitted_at, crawl_poll_count, crawl_deadline, crawl_errors")
+    .eq("story_id", storyId)
+    .maybeSingle();
+
+  if (!data) return null;
+  return {
+    storyId: data.story_id,
+    status: data.status,
+    crawlProvider: data.crawl_provider,
+    crawlJobId: data.crawl_job_id,
+    crawlSubmittedAt: data.crawl_submitted_at,
+    crawlPollCount: data.crawl_poll_count ?? 0,
+    crawlDeadline: data.crawl_deadline,
+    crawlErrors: Array.isArray(data.crawl_errors) ? data.crawl_errors : []
+  };
+}
+
+export async function upsertCrawlState(env, { storyId, provider, jobId, submittedAt, deadline }) {
+  if (!hasDB(env)) return;
+
+  await getDB(env)
+    .from("story_media")
+    .upsert({
+      story_id: storyId,
+      status: "queued",
+      attempts: 0,
+      crawl_provider: provider,
+      crawl_job_id: jobId,
+      crawl_submitted_at: submittedAt,
+      crawl_poll_count: 0,
+      crawl_deadline: deadline,
+      updated_at: new Date().toISOString()
+    });
+}
+
+export async function incrementCrawlPollCount(env, storyId) {
+  if (!hasDB(env)) return 0;
+
+  const { data } = await getDB(env).rpc("increment_crawl_poll_count", {
+    p_story_id: storyId
+  });
+  return Number(data ?? 0);
+}
+
+export async function appendCrawlError(env, storyId, { provider, error }) {
+  if (!hasDB(env)) return;
+
+  await getDB(env).rpc("append_crawl_error", {
+    p_story_id: storyId,
+    p_entry: { provider, error, at: new Date().toISOString() }
+  });
+}
+
+export async function clearCrawlState(env, storyId) {
+  if (!hasDB(env)) return;
+
+  await getDB(env)
+    .from("story_media")
+    .update({
+      crawl_provider: null,
+      crawl_job_id: null,
+      crawl_submitted_at: null,
+      crawl_poll_count: 0,
+      crawl_deadline: null,
+      updated_at: new Date().toISOString()
+    })
+    .eq("story_id", storyId);
+}
+
 export async function cleanupStaleMedia(env, days = 7) {
   if (!hasDB(env)) return 0;
 
@@ -1192,7 +1268,7 @@ export async function insertRSSItem(env, item) {
 
   const { error } = await getDB(env)
     .from("rss_items")
-    .upsert({
+    .insert({
       story_id: item.storyId,
       source_id: item.sourceId,
       guid: item.guid,
@@ -1202,18 +1278,19 @@ export async function insertRSSItem(env, item) {
       description: item.description ?? null,
       author: item.author ?? null,
       published_at: item.publishedAt ?? null
-    }, { onConflict: "source_id,guid", ignoreDuplicates: true });
-
-  if (error) {
-    log.warn({
-      event: "rss_item_insert_fail",
-      storyId: item.storyId,
-      sourceId: item.sourceId,
-      error: error.message
     });
-  }
 
-  return !error;
+  if (!error) return true;
+  if (error.code === "23505") return false;
+
+  log.warn({
+    event: "rss_item_insert_fail",
+    storyId: item.storyId,
+    sourceId: item.sourceId,
+    code: error.code,
+    error: error.message
+  });
+  return false;
 }
 
 export async function markRSSItemCrawlFailure(env, storyId, reason) {

@@ -19,7 +19,7 @@ const ARTICLE_METADATA_PROMPT = [
   "Extract structured article data from the crawled page.",
   "Do NOT return the article title — the title is taken verbatim from the source and must not be rewritten here.",
   "Return:",
-  "1. A teaser headline in exactly 2 sentences that sparks curiosity about the article without revealing its key points, answers, or conclusions.",
+  "1. A single headline of 60 to 85 characters (hard max 90). One sentence, no trailing period, no emojis, no quotes, no clickbait. It must be a complete thought that fits on a card without truncation.",
   "2. The detected article language as a short ISO-639-1 code when possible.",
   "3. A clear AI-generated summary in the same language as the article.",
   "4. A list of relevant topics as lowercase keywords (e.g., ai, privacy, security, data_retention)."
@@ -32,7 +32,7 @@ const ARTICLE_METADATA_SCHEMA = Object.freeze({
     properties: {
       headline: {
         type: "string",
-        description: "Exactly 2 sentences that create curiosity about the article without revealing key points or conclusions. Not the article's title."
+        description: "One short sentence, 60-85 characters (hard max 90), that summarizes the article so it fits on a feed card without truncation. Not the article's title, no trailing period, no emojis, no quotes."
       },
       language: {
         type: "string",

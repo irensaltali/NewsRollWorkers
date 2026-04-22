@@ -2,9 +2,15 @@ import { normalizeArticleMetadata } from "./browser-rendering.mjs";
 import * as log from "./log.mjs";
 
 const FIRECRAWL_API_BASE = "https://api.firecrawl.dev/v1";
+const FIRECRAWL_API_BASE_V2 = "https://api.firecrawl.dev/v2";
 const MAX_MARKDOWN_LENGTH = 16000;
 const KV_RR_INDEX_KEY = "firecrawl:rr:index";
 const KV_TTL_SECONDS = 90000; // 25 hours
+
+// Async batch-scrape jobs use a single fixed key (index 0) so the status endpoint
+// can be hit with the same credential that created the job. Round-robin still
+// applies to sync firecrawlScrapeUrl for load distribution.
+const ASYNC_JOB_KEY_INDEX = 0;
 
 // ── Key Parsing ──────────────────────────────────────────────────────
 
@@ -144,5 +150,99 @@ export async function firecrawlScrapeUrl(env, url, { storyId = null } = {}) {
     const message = err instanceof Error ? err.message : String(err);
     log.error({ event: "firecrawl_scrape_error", url, storyId, keyIndex: selected.keyIndex, error: message });
     return { markdown: null, metadata: null, success: false, error: message, provider: "firecrawl", failureKind: "unknown" };
+  }
+}
+
+// ── Async Batch-Scrape (v2) ──────────────────────────────────────────
+
+export async function submitFirecrawlJob(env, url) {
+  const keys = parseFirecrawlApiKeys(env);
+  if (keys.length === 0) {
+    return { jobId: null, success: false, error: "No Firecrawl API keys configured", failureKind: "config_error" };
+  }
+
+  const apiKey = keys[ASYNC_JOB_KEY_INDEX];
+  const body = {
+    urls: [url],
+    formats: ["markdown"],
+    onlyMainContent: true,
+    timeout: 60000
+  };
+
+  try {
+    const response = await fetch(`${FIRECRAWL_API_BASE_V2}/batch/scrape`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify(body)
+    });
+
+    const data = await response.json().catch(() => null);
+
+    if (!response.ok || !data?.success || !data?.id) {
+      const error = `Firecrawl submit error (${response.status}): ${JSON.stringify(data ?? {}).slice(0, 300)}`;
+      log.warn({ event: "firecrawl_submit_fail", url, status: response.status });
+      return { jobId: null, success: false, error, failureKind: "http_error" };
+    }
+
+    log.info({ event: "firecrawl_job_submitted", url, jobId: data.id });
+    return { jobId: data.id, success: true, error: null, failureKind: null };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    log.error({ event: "firecrawl_submit_error", url, error: message });
+    return { jobId: null, success: false, error: message, failureKind: "unknown" };
+  }
+}
+
+export async function checkFirecrawlJob(env, jobId) {
+  const keys = parseFirecrawlApiKeys(env);
+  if (keys.length === 0) {
+    return { status: "failed", error: "No Firecrawl API keys configured", failureKind: "config_error" };
+  }
+
+  const apiKey = keys[ASYNC_JOB_KEY_INDEX];
+
+  try {
+    const response = await fetch(`${FIRECRAWL_API_BASE_V2}/batch/scrape/${encodeURIComponent(jobId)}`, {
+      method: "GET",
+      headers: { Authorization: `Bearer ${apiKey}` }
+    });
+
+    const data = await response.json().catch(() => null);
+
+    if (!response.ok) {
+      const error = `Firecrawl status error (${response.status}): ${JSON.stringify(data ?? {}).slice(0, 300)}`;
+      return { status: "failed", error, failureKind: "http_error" };
+    }
+
+    if (data?.status === "scraping") {
+      return { status: "running" };
+    }
+
+    if (data?.status !== "completed") {
+      return {
+        status: "failed",
+        error: `Firecrawl job ended with status: ${data?.status ?? "unknown"}`,
+        failureKind: data?.status === "failed" ? "http_error" : "timeout"
+      };
+    }
+
+    const first = Array.isArray(data?.data) ? data.data[0] : null;
+    const markdown = typeof first?.markdown === "string"
+      ? first.markdown.trim().slice(0, MAX_MARKDOWN_LENGTH)
+      : null;
+
+    if (!markdown) {
+      return { status: "failed", error: "Firecrawl job completed with no markdown", failureKind: "no_content" };
+    }
+
+    const metadata = mapFirecrawlMetadata({ rawMetadata: first?.metadata ?? null });
+    return { status: "completed", markdown, metadata, failureKind: null };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    log.error({ event: "firecrawl_status_error", jobId, error: message });
+    return { status: "failed", error: message, failureKind: "unknown" };
   }
 }

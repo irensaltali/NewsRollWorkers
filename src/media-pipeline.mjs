@@ -30,7 +30,7 @@ import * as log from "./log.mjs";
 import * as shaped from "./shaped.mjs";
 import { readableUrlFor } from "./visual-feed.mjs";
 import { buildFalImageRequest, generateImageWithProvider } from "./media-generation.mjs";
-import { crawlWithFallback, submitCrawlJobWithTracking, checkCrawlJobWithFallback } from "./crawl-provider.mjs";
+import { crawlWithFallback, submitCrawlJobWithTracking, checkCrawlJobWithFallback, checkCrawl } from "./crawl-provider.mjs";
 import {
   buildImagePromptOptimizerInput,
   generateOptimizedImagePrompt
@@ -103,6 +103,23 @@ export function needsMediaCrawl(messageBody, resolvedArticle) {
 
 function normalizeResolvedText(value) {
   return typeof value === "string" ? value.trim() : "";
+}
+
+// Infra-level crawl failures (our own API token rejected, job provisioning errors, etc.)
+// must NOT be treated as a permanent origin-site block — they'd deactivate healthy sources.
+const INFRA_CRAWL_ERROR_PATTERNS = [
+  /Cloudflare crawl API error/i,
+  /Cloudflare crawl job/i,
+  /Firecrawl/i,
+  /Missing Cloudflare credentials/i,
+  /Authentication error/i
+];
+
+export function isPermanentCrawlError(errorText) {
+  const text = typeof errorText === "string" ? errorText : "";
+  if (!text) return false;
+  if (INFRA_CRAWL_ERROR_PATTERNS.some((re) => re.test(text))) return false;
+  return /robots\.txt|disallowed|\b40[13]\b/i.test(text);
 }
 
 async function enqueueStoryForMedia(env, endpoint, story) {
@@ -208,7 +225,8 @@ export async function processMediaMessage(batch, env, ctx = null) {
     if (message.body?.crawlJobId) {
       const crawlJobId = message.body.crawlJobId;
       const crawlAttempts = message.body.crawlAttempts ?? 0;
-      const crawlCheck = await checkCrawlJobWithFallback(env, crawlJobId, message.body.url, { storyId });
+      const provider = message.body?.crawlProvider ?? "cloudflare";
+      const crawlCheck = await checkCrawl(env, provider, crawlJobId);
 
       if (crawlCheck.status === "running") {
         if (crawlAttempts >= MAX_CRAWL_WAITS) {
@@ -307,7 +325,7 @@ export async function processMediaMessage(batch, env, ctx = null) {
       }
 
       if (resolvedArticle.crawlError) {
-        const isPermanent = /robots\.txt|disallowed|4\d\d/i.test(resolvedArticle.crawlError);
+        const isPermanent = isPermanentCrawlError(resolvedArticle.crawlError);
         if (isPermanent) {
           log.warn({ event: "crawl_permanent_fail", storyId, url: body.url ?? null, error: resolvedArticle.crawlError });
           await upsertMedia(env, {
@@ -323,6 +341,14 @@ export async function processMediaMessage(batch, env, ctx = null) {
           });
           const sourceId = await getRSSSourceIdByStoryId(env, storyId);
           if (sourceId) {
+            log.warn({
+              event: "rss_source_deactivate_reason",
+              storyId,
+              sourceId,
+              reason: "crawl_blocked",
+              sample: body.url ?? null,
+              error: resolvedArticle.crawlError
+            });
             await setRSSSourceActive(env, sourceId, false);
             log.warn({ event: "rss_source_deactivated", storyId, sourceId, reason: "crawl_blocked" });
           }
@@ -349,10 +375,18 @@ export async function processMediaMessage(batch, env, ctx = null) {
           const crawlError = metaCrawl.error ?? "no_metadata";
           metadataFailureReason = crawlError;
           log.warn({ event: "metadata_crawl_fail", storyId, url: body.url, error: crawlError });
-          const isPermanent = /robots\.txt|disallowed|4\d\d/i.test(crawlError);
+          const isPermanent = isPermanentCrawlError(crawlError);
           if (isPermanent) {
             const sourceId = await getRSSSourceIdByStoryId(env, storyId);
             if (sourceId) {
+              log.warn({
+                event: "rss_source_deactivate_reason",
+                storyId,
+                sourceId,
+                reason: "metadata_crawl_blocked",
+                sample: body.url ?? null,
+                error: crawlError
+              });
               await setRSSSourceActive(env, sourceId, false);
               log.warn({ event: "rss_source_deactivated", storyId, sourceId, reason: "metadata_crawl_blocked" });
             }
@@ -605,7 +639,7 @@ export async function processMediaMessage(batch, env, ctx = null) {
           mediaUrl,
           readableUrl: readableUrlFor(env, body.storyId),
           headline,
-          publishedAt: now
+          publishedAt: body.publishedAt ?? now
         });
         log.info({
           event: "visual_feed_publish_result",

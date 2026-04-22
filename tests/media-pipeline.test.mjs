@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { buildFalImageRequest, dailyMediaLimit, mediaPerRunLimit, meetsMediaQualityGate, needsMediaCrawl, processMediaMessage } from "../src/media-pipeline.mjs";
+import { buildFalImageRequest, dailyMediaLimit, isPermanentCrawlError, mediaPerRunLimit, meetsMediaQualityGate, needsMediaCrawl, processMediaMessage } from "../src/media-pipeline.mjs";
 import { publicMediaUrlFor, MEDIA_DAILY_LIMIT_DEFAULT, MEDIA_MAX_QUEUE_RETRIES, MEDIA_MIN_SCORE_DEFAULT, MEDIA_PER_RUN_LIMIT_DEFAULT } from "../src/config.mjs";
 import { cleanupStaleMedia } from "../src/db.mjs";
 import { mediaTemplateWithFallback } from "../src/prompt-config.mjs";
@@ -21,6 +21,24 @@ test("mediaTemplateWithFallback uses the canonical fal image model id", () => {
   const template = mediaTemplateWithFallback(null, "image");
 
   assert.equal(template.model, "fal-ai/flux-2/turbo");
+});
+
+test("isPermanentCrawlError flags origin 401/403 and robots blocks", () => {
+  assert.equal(isPermanentCrawlError("HTTP 401 Unauthorized"), true);
+  assert.equal(isPermanentCrawlError("403 Forbidden"), true);
+  assert.equal(isPermanentCrawlError("Disallowed by robots.txt"), true);
+  assert.equal(isPermanentCrawlError("Crawl completely disallowed by robots.txt"), true);
+});
+
+test("isPermanentCrawlError ignores transient and infra failures", () => {
+  assert.equal(isPermanentCrawlError("Cloudflare crawl API error (401): Authentication error"), false);
+  assert.equal(isPermanentCrawlError("Cloudflare crawl API error (403): Invalid API token"), false);
+  assert.equal(isPermanentCrawlError("Cloudflare crawl job did not complete within timeout"), false);
+  assert.equal(isPermanentCrawlError("HTTP 404 Not Found"), false);
+  assert.equal(isPermanentCrawlError("HTTP 429 Too Many Requests"), false);
+  assert.equal(isPermanentCrawlError("HTTP 500 Internal Server Error"), false);
+  assert.equal(isPermanentCrawlError(""), false);
+  assert.equal(isPermanentCrawlError(null), false);
 });
 
 test("publicMediaUrlFor prefers the explicit media host when configured", () => {
@@ -173,4 +191,61 @@ test("cleanupStaleMedia returns 0 when no DB is available", async () => {
 
 test("cleanupStaleMedia returns 0 when SUPABASE_URL is absent", async () => {
   assert.equal(await cleanupStaleMedia({ DB: {} }, 14), 0);
+});
+
+test("crawl-wait gate routes to Firecrawl status endpoint when crawlProvider is firecrawl", async () => {
+  const originalFetch = globalThis.fetch;
+  const hitUrls = [];
+  const requeued = [];
+  try {
+    globalThis.fetch = async (input) => {
+      const url = String(input);
+      hitUrls.push(url);
+      if (url === "https://api.firecrawl.dev/v2/batch/scrape/fc-1") {
+        return Response.json({ status: "scraping" });
+      }
+      throw new Error(`Unexpected fetch: ${url}`);
+    };
+
+    const env = {
+      FIRECRAWL_API_KEYS: "fc-key",
+      MEDIA_QUEUE: {
+        async send(message, opts) {
+          requeued.push({ message, opts });
+        }
+      }
+    };
+
+    const message = {
+      body: {
+        kind: "crawl_check",
+        storyId: 42,
+        endpoint: "tech",
+        url: "https://example.com/story",
+        title: "Story",
+        crawlJobId: "fc-1",
+        crawlProvider: "firecrawl",
+        crawlAttempts: 0
+      },
+      attempts: 0,
+      ack() {},
+      retry() { throw new Error("should not retry"); }
+    };
+
+    await processMediaMessage({ messages: [message] }, env);
+
+    assert.ok(
+      hitUrls.some((u) => u === "https://api.firecrawl.dev/v2/batch/scrape/fc-1"),
+      `expected Firecrawl status hit, got ${JSON.stringify(hitUrls)}`
+    );
+    assert.ok(
+      !hitUrls.some((u) => u.includes("browser-rendering")),
+      "must not hit the Cloudflare browser-rendering endpoint"
+    );
+    assert.equal(requeued.length, 1, "running status should trigger a requeue");
+    assert.equal(requeued[0].message.crawlAttempts, 1);
+    assert.equal(requeued[0].opts.delaySeconds, 30);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });

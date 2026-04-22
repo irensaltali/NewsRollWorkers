@@ -8,18 +8,13 @@
 	],
 	// Required secrets (wrangler secret put):
 	// - SUPABASE_SECRET_KEY
-	// - OPENAI_API_KEY
-	// - SHAPED_API_KEY
 	// - CLOUDFLARE_API_TOKEN
+	// - FIRECRAWL_API_KEYS
 	"vars": {
-		"APP_NAME": "NewsRoll Ingest",
 		"ENVIRONMENT": "production",
 		"CLOUDFLARE_ACCOUNT_ID": "ccbc9926d08a298aee2a4f0cffcfc4a3",
-		"PUBLIC_API_BASE_URL": "https://api.newsroll.app",
-		"PUBLIC_MEDIA_BASE_URL": "https://media.newsroll.app",
 		"MEDIA_DAILY_LIMIT": "50",
 		"MEDIA_PER_RUN_LIMIT": "5",
-		"MEDIA_MIN_SCORE": "5",
 		"SUPABASE_URL": "https://snazihvdznshybaogwrx.supabase.co"
 	},
 	"queues": {
