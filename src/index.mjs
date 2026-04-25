@@ -45,6 +45,7 @@ import {
   writeVisualFeedSnapshot
 } from "./visual-feed.mjs";
 import { validateEventBatch, storeEvents } from "./events.mjs";
+import { handleLandingLead } from "./landing-leads.mjs";
 import { authorizeAIRequest, ensureAIRequestBalance, finalizeAIRequestCharge, CREDIT_COSTS } from "./credits.mjs";
 import {
   formatExplainResult,
@@ -635,7 +636,11 @@ function aiBillingError(result) {
   return null;
 }
 
-const ALLOWED_ORIGINS = ["https://newsroll.app"];
+const ALLOWED_ORIGINS = [
+  "https://newsroll.app",
+  "https://www.newsroll.app",
+  "http://localhost:5173"
+];
 
 function corsOrigin(request) {
   const origin = request?.headers?.get?.("origin") ?? "";
@@ -2491,6 +2496,7 @@ const ROUTES = [
   { method: "GET",   path: "/v1/config",             name: "config",           handler: handleConfig },
   { method: "GET",   path: "/v1/visual-feed",        name: "visual_feed",      handler: handleVisualFeed },
   { method: "POST",  path: "/v1/events",             name: "events",          handler: handleEvents },
+  { method: "POST",  path: "/landing/lead",           name: "landing_lead",    handler: handleLandingLead },
   { method: "POST",  path: "/v1/ai/summary",          name: "ai_summary",      handler: handleAISummary },
   { method: "POST",  path: "/v1/ai/translate",         name: "ai_translate",    handler: handleAITranslate },
   { method: "POST",  path: "/v1/ai/explain",           name: "ai_explain",      handler: handleAIExplain },

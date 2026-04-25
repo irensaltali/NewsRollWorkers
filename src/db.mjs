@@ -1387,3 +1387,30 @@ export async function cleanupOldUserEvents(env, days = 30) {
   void days;
   return 0;
 }
+
+export async function insertLandingLead(env, lead) {
+  if (!hasDB(env)) {
+    return { ok: false, reason: "no_db" };
+  }
+
+  const { error } = await getDB(env)
+    .from("landing_leads")
+    .insert({
+      source: lead.source,
+      email: lead.email,
+      payload: lead.payload ?? {},
+      user_agent: lead.userAgent ?? null,
+      ip_hash: lead.ipHash ?? null
+    });
+
+  if (!error) return { ok: true, deduped: false };
+  if (error.code === "23505") return { ok: true, deduped: true };
+
+  log.warn({
+    event: "landing_lead_insert_fail",
+    source: lead.source,
+    code: error.code,
+    error: error.message
+  });
+  return { ok: false, reason: error.message ?? "insert_failed" };
+}
