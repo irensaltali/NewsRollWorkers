@@ -2,6 +2,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import worker from "../src/index.mjs";
+import { finalizeAIRequestCharge } from "../src/credits.mjs";
+import { hasAIRequestReceipt, storeAIRequestReceipt } from "../src/db.mjs";
 import { signTestJWT, TEST_JWT_SECRET, TEST_USER_ID } from "./test-auth.mjs";
 
 const env = {
@@ -48,6 +50,85 @@ function withMockedFetch(mocks, fn) {
     globalThis.fetch = originalFetch;
   });
 }
+
+test("AI receipt helpers use subscriber_id and surface Supabase failures", async () => {
+  const testEnv = {
+    SUPABASE_URL: "https://example.supabase.co",
+    SUPABASE_SECRET_KEY: "service-role-test"
+  };
+  const receiptKey = {
+    subscriberId: "subscriber-123",
+    action: "translation",
+    storyId: 42,
+    targetLanguage: "tr",
+    contentHash: "hash-123"
+  };
+  const originalFetch = globalThis.fetch;
+  const requests = [];
+
+  globalThis.fetch = async (input, init = {}) => {
+    const url = typeof input === "string" ? input : input.url;
+    const method = init.method ?? "GET";
+    requests.push({ url, method, body: init.body ? JSON.parse(init.body) : null });
+
+    if (url.includes("/rest/v1/ai_request_receipts") && method === "GET") {
+      assert.match(url, /select=subscriber_id/);
+      assert.match(url, /subscriber_id=eq\.subscriber-123/);
+      assert.doesNotMatch(url, /user_id/);
+      return Response.json({
+        subscriber_id: "subscriber-123"
+      });
+    }
+
+    if (url.includes("/rest/v1/ai_request_receipts") && method === "POST") {
+      return Response.json([requests.at(-1).body], { status: 201 });
+    }
+
+    throw new Error(`Unexpected fetch: ${url} ${method}`);
+  };
+
+  try {
+    assert.equal(await hasAIRequestReceipt(testEnv, receiptKey), true);
+    await storeAIRequestReceipt(testEnv, receiptKey);
+
+    const stored = requests.find((request) => request.method === "POST")?.body;
+    assert.equal(stored.subscriber_id, "subscriber-123");
+    assert.equal("user_id" in stored, false);
+
+    globalThis.fetch = async () => Response.json({ code: "PGRST500", message: "db unavailable" }, { status: 500 });
+    await assert.rejects(
+      () => hasAIRequestReceipt(testEnv, receiptKey),
+      /AI request receipt lookup failed/
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("AI charge idempotency key is stable for the same logical request", async () => {
+  const installId = "install-stable-idempotency";
+  const idempotencyKeys = [];
+
+  await withMockedFetch([
+    {
+      match: `customers/${installId}/virtual_currencies/transactions`,
+      onMatch: ({ init }) => {
+        idempotencyKeys.push(init.headers["Idempotency-Key"]);
+      },
+      body: { object: "list", items: [{ object: "virtual_currency_balance", currency_code: "credit", balance: 748 }] }
+    }
+  ], async () => {
+    const first = await finalizeAIRequestCharge(env, installId, "summary", "summary:123", 1);
+    const second = await finalizeAIRequestCharge(env, installId, "summary", "summary:123", 1);
+
+    assert.equal(first.success, true);
+    assert.equal(second.success, true);
+  });
+
+  assert.equal(idempotencyKeys.length, 2);
+  assert.equal(idempotencyKeys[0], idempotencyKeys[1]);
+  assert.equal(idempotencyKeys[0], "ai-charge:install-stable-idempotency:summary:summary:123");
+});
 
 test("AI cache hit returns cached result and still spends credits", async () => {
   const installId = "install-cache-hit";
@@ -392,6 +473,100 @@ test("RC spend success returns AI result with balanceAfter", async () => {
     assert.equal(payload.creditsUsed, 1);
     assert.equal(payload.balanceAfter, 749);
   });
+});
+
+test("repeated AI summary request with stored receipt does not spend credits again", async () => {
+  const installId = "install-receipt-repeat";
+  const token = makeToken(installId);
+  const receipts = new Set();
+  let storedSummary = null;
+  let spendCalls = 0;
+  const testEnv = {
+    ...env,
+    SUPABASE_URL: "https://example.supabase.co",
+    SUPABASE_SECRET_KEY: "service-role-test"
+  };
+
+  await withMockedFetch([
+    {
+      match: `customers/${installId}/virtual_currencies/transactions`,
+      onMatch: () => { spendCalls += 1; },
+      body: { object: "list", items: [{ object: "virtual_currency_balance", currency_code: "credit", balance: 749 }] }
+    },
+    {
+      matchEnd: `customers/${installId}/virtual_currencies`,
+      body: { object: "list", items: [{ object: "virtual_currency_balance", currency_code: "credit", balance: 750 }] }
+    },
+    {
+      matchEnd: `customers/${installId}`,
+      body: { object: "customer", id: installId, active_entitlements: { object: "list", items: [{ object: "customer.active_entitlement", entitlement_id: "pro", expires_at: null }] } }
+    },
+    {
+      match: "/rest/v1/ai_request_receipts",
+      body: ({ url, init }) => {
+        const method = init.method ?? "GET";
+        if (method === "GET") {
+          return receipts.has("summary:99901") ? { subscriber_id: installId } : null;
+        }
+
+        const body = JSON.parse(init.body);
+        assert.equal(body.subscriber_id, installId);
+        assert.equal("user_id" in body, false);
+        receipts.add(`${body.action}:${body.story_id}`);
+        return [body];
+      }
+    },
+    {
+      match: "/rest/v1/story_content",
+      body: ({ init }) => {
+        const method = init.method ?? "GET";
+        if (method === "GET") {
+          return {
+            summary: storedSummary,
+            extracted_text: null,
+            ai_headline: null,
+            topics: []
+          };
+        }
+
+        const body = JSON.parse(init.body);
+        storedSummary = body.summary ?? storedSummary;
+        return [body];
+      }
+    },
+    {
+      match: "/rest/v1/prompt_run_events",
+      body: ({ init }) => [JSON.parse(init.body)]
+    },
+    {
+      match: "api.openai.com",
+      body: { choices: [{ message: { content: JSON.stringify({ bullets: ["AI generated summary"] }) } }] }
+    }
+  ], async () => {
+    const makeRequest = () => worker.fetch(
+      new Request("https://example.com/v1/ai/summary", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          authorization: `Bearer ${token}`
+        },
+        body: JSON.stringify({ storyId: 99901, title: "Test", text: "Test content" })
+      }),
+      testEnv
+    );
+
+    const first = await makeRequest();
+    assert.equal(first.status, 200);
+    assert.equal((await first.json()).charged, true);
+
+    const second = await makeRequest();
+    assert.equal(second.status, 200);
+    const payload = await second.json();
+    assert.equal(payload.charged, false);
+    assert.equal(payload.creditsUsed, 0);
+  });
+
+  assert.equal(spendCalls, 1);
 });
 
 test("RC spend 422 returns insufficient_credits error", async () => {

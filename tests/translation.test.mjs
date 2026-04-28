@@ -153,18 +153,18 @@ test("changed translation content hash charges the same user again", async () =>
   assert.equal(payload.comments[1].id, 202);
 });
 
-test("translation crawls and stores article text on first request when story text is missing", async () => {
+test("translation uses only request story text and does not crawl article bodies", async () => {
   const installId = "install-translation-crawl";
   const token = makeToken(installId);
-  // inserts will always be empty without SUPABASE_URL
-  const inserts = [];
+  let hnItemRequests = 0;
+  let crawlRequests = 0;
   let openAIRequestBody = null;
   const body = makeTranslationBody({
     storyId: 303,
     story: {
       id: 303,
       title: "Translate crawled link",
-      text: "",
+      text: "Request payload story text only.",
       url: "https://example.com/translated-article"
     }
   });
@@ -184,6 +184,7 @@ test("translation crawls and stores article text on first request when story tex
     },
     {
       matchEnd: "/v0/item/303.json",
+      onMatch: () => { hnItemRequests += 1; },
       body: {
         id: 303,
         type: "story",
@@ -194,10 +195,12 @@ test("translation crawls and stores article text on first request when story tex
     },
     {
       matchEnd: "/browser-rendering/crawl",
+      onMatch: () => { crawlRequests += 1; },
       body: { success: true, result: "crawl-job-translation" }
     },
     {
       matchEnd: "/browser-rendering/crawl/crawl-job-translation",
+      onMatch: () => { crawlRequests += 1; },
       body: {
         success: true,
         result: {
@@ -247,11 +250,11 @@ test("translation crawls and stores article text on first request when story tex
   ));
 
   assert.equal(response.status, 200);
-  assert.match(openAIRequestBody.messages[1].content, /Crawled translation article body\./);
-  // inserts is always empty without SUPABASE_URL — D1 story_content insert is a no-op
-  assert.equal(inserts.some((entry) =>
-    entry.sql?.includes("INSERT INTO story_content")
-  ), false);
+  assert.equal(hnItemRequests, 0);
+  assert.equal(crawlRequests, 0);
+  assert.match(openAIRequestBody.messages[1].content, /Translate crawled link/);
+  assert.match(openAIRequestBody.messages[1].content, /Request payload story text only\./);
+  assert.doesNotMatch(openAIRequestBody.messages[1].content, /Crawled translation article body\./);
 });
 
 test("translation returns 502 when model output fails validation", async () => {

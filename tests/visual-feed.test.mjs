@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 
 import { VISUAL_FEED_CACHE_TTL_SECONDS } from "../src/config.mjs";
 import { publishReadyStoryDirect } from "../src/global-visual-feed-coordinator.mjs";
-import { writeVisualFeedSnapshot } from "../src/visual-feed.mjs";
+import { buildVisualFeedResponse, writeVisualFeedSnapshot } from "../src/visual-feed.mjs";
 
 function readyRow(storyId = 99999999) {
   return {
@@ -70,4 +70,19 @@ test("publishReadyStoryDirect still succeeds when snapshot cache writes fail", a
   assert.equal(result.ok, true);
   assert.equal(result.published, true);
   assert.equal(result.publishSequence > 0, true);
+});
+
+test("buildVisualFeedResponse preserves locked manifest flags", () => {
+  const response = buildVisualFeedResponse(
+    { PUBLIC_BASE_URL: "https://newsroll.invalid" },
+    [
+      { ...readyRow(1), isLocked: false },
+      { ...readyRow(2), storyId: 2, publishSequence: 2, isLocked: true }
+    ],
+    null,
+    10
+  );
+
+  assert.equal(response.items[0].isLocked, false);
+  assert.equal(response.items[1].isLocked, true);
 });

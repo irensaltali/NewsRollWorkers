@@ -54,7 +54,8 @@ export function toVisualFeedItem(env, row) {
     sourceUrl: row.sourceUrl ?? null,
     readableUrl: row.readableUrl ?? readableUrlFor(env, row.storyId),
     mediaStatus: row.mediaStatus ?? "ready",
-    headline: row.headline ?? null
+    headline: row.headline ?? null,
+    isLocked: row.isLocked ?? null
   };
 }
 

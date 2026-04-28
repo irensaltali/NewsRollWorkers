@@ -835,18 +835,60 @@ export async function storeCachedAIResult(env, payload) {
 
 // ── AI request receipts (billing dedup) ──────────────────────────────────────
 
-export async function hasAIRequestReceipt(env, payload) {
-  if (!hasDB(env)) return false;
+function isMissingReceiptSubscriberColumn(error) {
+  return error?.code === "42703" && String(error.message ?? "").includes("subscriber_id");
+}
 
-  const { data } = await getDB(env)
+async function selectAIRequestReceipt(env, payload, subscriberColumn) {
+  return getDB(env)
     .from("ai_request_receipts")
-    .select("user_id")
-    .eq("user_id", payload.subscriberId)
+    .select(subscriberColumn)
+    .eq(subscriberColumn, payload.subscriberId)
     .eq("action", payload.action)
     .eq("story_id", payload.storyId)
     .eq("target_language", payload.targetLanguage ?? "")
     .eq("content_hash", payload.contentHash)
     .maybeSingle();
+}
+
+async function upsertAIRequestReceipt(env, payload, subscriberColumn) {
+  return getDB(env)
+    .from("ai_request_receipts")
+    .upsert({
+      [subscriberColumn]: payload.subscriberId,
+      action: payload.action,
+      story_id: payload.storyId,
+      target_language: payload.targetLanguage ?? "",
+      content_hash: payload.contentHash
+    });
+}
+
+export async function hasAIRequestReceipt(env, payload) {
+  if (!hasDB(env)) return false;
+
+  let { data, error } = await selectAIRequestReceipt(env, payload, "subscriber_id");
+
+  if (isMissingReceiptSubscriberColumn(error)) {
+    log.warn({
+      event: "ai_request_receipt_legacy_user_id_lookup",
+      subscriberId: payload.subscriberId,
+      action: payload.action,
+      storyId: payload.storyId
+    });
+    ({ data, error } = await selectAIRequestReceipt(env, payload, "user_id"));
+  }
+
+  if (error) {
+    log.error({
+      event: "ai_request_receipt_lookup_fail",
+      subscriberId: payload.subscriberId,
+      action: payload.action,
+      storyId: payload.storyId,
+      code: error.code,
+      error: error.message
+    });
+    throw new Error("AI request receipt lookup failed");
+  }
 
   return Boolean(data);
 }
@@ -854,15 +896,29 @@ export async function hasAIRequestReceipt(env, payload) {
 export async function storeAIRequestReceipt(env, payload) {
   if (!hasDB(env)) return;
 
-  await getDB(env)
-    .from("ai_request_receipts")
-    .upsert({
-      user_id: payload.subscriberId,
+  let { error } = await upsertAIRequestReceipt(env, payload, "subscriber_id");
+
+  if (isMissingReceiptSubscriberColumn(error)) {
+    log.warn({
+      event: "ai_request_receipt_legacy_user_id_store",
+      subscriberId: payload.subscriberId,
       action: payload.action,
-      story_id: payload.storyId,
-      target_language: payload.targetLanguage ?? "",
-      content_hash: payload.contentHash
+      storyId: payload.storyId
     });
+    ({ error } = await upsertAIRequestReceipt(env, payload, "user_id"));
+  }
+
+  if (error) {
+    log.error({
+      event: "ai_request_receipt_store_fail",
+      subscriberId: payload.subscriberId,
+      action: payload.action,
+      storyId: payload.storyId,
+      code: error.code,
+      error: error.message
+    });
+    throw new Error("AI request receipt store failed");
+  }
 }
 
 // ── AI prompt configs ─────────────────────────────────────────────────────────

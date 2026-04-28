@@ -319,24 +319,15 @@ function translationHashSource(payload) {
   };
 }
 
-async function buildTranslationPayload(env, body) {
+async function buildTranslationPayload(body) {
   const storyId = Number(body.storyId);
   const targetLanguage = normalizeText(body.targetLanguage);
   const story = normalizeTranslationStory(storyId, body.story);
-  const resolvedStory = await resolveArticleContent(env, storyId, {
-    title: story.title,
-    text: story.text,
-    url: body.story?.url
-  });
   const comments = normalizeStructuredComments(body.comments);
   const source = {
     storyId,
     targetLanguage,
-    story: {
-      ...story,
-      title: resolvedStory.title || story.title,
-      text: resolvedStory.text
-    },
+    story,
     comments
   };
   const contentHash = await sha256Hex(sortedJson(translationHashSource(source)));
@@ -826,11 +817,12 @@ async function handleAISummary(request, env) {
   if (stored?.summary) {
     log.info({ event: "ai_summary_db_hit", storyId, source: "story_content.summary" });
     await new Promise((r) => setTimeout(r, 500)); // fake delay for DB hit
+    const provider = await resolveAIProvider(env, "summary");
     await createPromptRunEvent(env, {
       source: "app_api",
       promptKind: "ai",
       promptKey: "summary",
-      provider: "openai",
+      provider,
       model: AI_ACTIONS.summary.model,
       modality: "text",
       status: "cached",
@@ -850,19 +842,33 @@ async function handleAISummary(request, env) {
     return json({ result: stored.summary, creditsUsed: auth.cost, balanceAfter: charge.balance, cached: true, charged: true });
   }
 
-  if (!hasOpenAIConfig(env)) {
+  const provider = await resolveAIProvider(env, "summary");
+  if (provider !== "cloudflare" && !hasOpenAIConfig(env)) {
     return error("AI provider unavailable", 503, { code: "ai_provider_unavailable", provider: "openai" });
   }
 
   let result;
   let summaryTitle = body.title ?? "";
-  const provider = await resolveAIProvider(env, "summary");
 
   if (provider === "cloudflare") {
     const articleUrl = await resolveArticleUrl(env, storyId, { url: body.url ?? null });
     if (articleUrl) {
       result = await generateSummaryViaCrawl(env, articleUrl, storyId, summaryTitle);
     } else {
+      if (!hasOpenAIConfig(env)) {
+        log.warn({
+          event: "ai_provider_unavailable",
+          provider: "openai",
+          action: "summary",
+          reason: "cloudflare_summary_requires_url_for_crawl",
+          storyId
+        });
+        return error("AI provider unavailable", 503, {
+          code: "ai_provider_unavailable",
+          provider: "openai",
+          reason: "cloudflare_summary_requires_url_for_crawl"
+        });
+      }
       log.info({ event: "provider_fallback", provider: "cloudflare", fallback: "openai", reason: "no_url", storyId });
       const textToUse = stored?.extractedText || body.text || "";
       const article = textToUse
@@ -937,7 +943,7 @@ async function handleAITranslate(request, env) {
     return error("AI provider unavailable", 503, { code: "ai_provider_unavailable", provider: "openai" });
   }
 
-  const payload = await buildTranslationPayload(env, body);
+  const payload = await buildTranslationPayload(body);
   if (!payload.storyId || !payload.targetLanguage) {
     return error("storyId and targetLanguage are required", 422);
   }

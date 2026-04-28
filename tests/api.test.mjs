@@ -153,11 +153,186 @@ function withMockedFetch(mocks, fn) {
   });
 }
 
+function createPromptConfigDb(row) {
+  return {
+    prepare(sql) {
+      return {
+        bind(...args) {
+          return {
+            async first() {
+              if (sql.includes("FROM ai_prompt_configs")) {
+                return row?.key === args[0] ? row : null;
+              }
+              return null;
+            },
+            async run() {
+              return { success: true };
+            }
+          };
+        }
+      };
+    }
+  };
+}
+
 test("health endpoint responds", async () => {
   const response = await worker.fetch(new Request("https://example.com/health"), env);
   assert.equal(response.status, 200);
   const payload = await response.json();
   assert.equal(payload.ok, true);
+});
+
+test("summary uses Cloudflare provider without OPENAI_API_KEY", async () => {
+  const installId = "summary-cloudflare-no-openai";
+  const token = signTestJWT(installId, TEST_JWT_SECRET);
+  const originalSetTimeout = globalThis.setTimeout;
+  let openAICalls = 0;
+  let cloudflarePrompt = "";
+
+  globalThis.setTimeout = (callback, _delay, ...args) => originalSetTimeout(callback, 0, ...args);
+  try {
+    const response = await withMockedFetch([
+      {
+        matchEnd: `customers/${installId}`,
+        body: { object: "customer", id: installId, active_entitlements: { object: "list", items: [{ object: "customer.active_entitlement", entitlement_id: "pro", expires_at: null }] } }
+      },
+      {
+        matchEnd: `customers/${installId}/virtual_currencies`,
+        body: { object: "list", items: [{ object: "virtual_currency_balance", currency_code: "credit", balance: 750 }] }
+      },
+      {
+        match: `customers/${installId}/virtual_currencies/transactions`,
+        body: { object: "list", items: [{ object: "virtual_currency_balance", currency_code: "credit", balance: 749 }] }
+      },
+      {
+        match: "api.openai.com",
+        body: () => {
+          openAICalls += 1;
+          return { choices: [{ message: { content: "" } }] };
+        }
+      },
+      {
+        matchEnd: "/browser-rendering/crawl",
+        body: ({ init }) => {
+          cloudflarePrompt = JSON.parse(init.body)?.jsonOptions?.prompt ?? "";
+          return { success: true, result: "crawl-job-summary" };
+        }
+      },
+      {
+        match: "/browser-rendering/crawl/crawl-job-summary",
+        body: {
+          success: true,
+          result: {
+            status: "completed",
+            records: [
+              {
+                url: "https://example.com/cloudflare-summary",
+                json: { bullets: ["First point", "Second point"] },
+                markdown: "Article body"
+              }
+            ]
+          }
+        }
+      }
+    ], async () => worker.fetch(
+      new Request("https://example.com/v1/ai/summary", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          authorization: `Bearer ${token}`
+        },
+        body: JSON.stringify({
+          storyId: 818,
+          title: "Cloudflare summary",
+          url: "https://example.com/cloudflare-summary"
+        })
+      }),
+      {
+        ...env,
+        OPENAI_API_KEY: "",
+        CLOUDFLARE_ACCOUNT_ID: "acct_test",
+        CLOUDFLARE_API_TOKEN: "cf_token_test",
+        DB: createPromptConfigDb({
+          key: "summary",
+          name: "Summary",
+          provider: "cloudflare",
+          model: "cloudflare-crawl",
+          max_completion_tokens: 500,
+          system_prompt: "Summarize with Cloudflare.",
+          user_prompt_template: "",
+          settings: "{}",
+          active: true
+        })
+      }
+    ));
+
+    assert.equal(response.status, 200);
+    const payload = await response.json();
+    assert.equal(payload.result, "• First point\n• Second point");
+    assert.equal(openAICalls, 0);
+    assert.match(cloudflarePrompt, /Summarize the page content/);
+  } finally {
+    globalThis.setTimeout = originalSetTimeout;
+  }
+});
+
+test("summary Cloudflare provider without URL fails clearly when OpenAI fallback is unavailable", async () => {
+  const installId = "summary-cloudflare-no-url-no-openai";
+  const token = signTestJWT(installId, TEST_JWT_SECRET);
+  let openAICalls = 0;
+
+  const response = await withMockedFetch([
+    {
+      matchEnd: `customers/${installId}`,
+      body: { object: "customer", id: installId, active_entitlements: { object: "list", items: [{ object: "customer.active_entitlement", entitlement_id: "pro", expires_at: null }] } }
+    },
+    {
+      matchEnd: `customers/${installId}/virtual_currencies`,
+      body: { object: "list", items: [{ object: "virtual_currency_balance", currency_code: "credit", balance: 750 }] }
+    },
+    {
+      match: "api.openai.com",
+      body: () => {
+        openAICalls += 1;
+        return { choices: [{ message: { content: "" } }] };
+      }
+    }
+  ], async () => worker.fetch(
+    new Request("https://example.com/v1/ai/summary", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${token}`
+      },
+      body: JSON.stringify({
+        storyId: 819,
+        title: "Cloudflare summary without URL"
+      })
+    }),
+    {
+      ...env,
+      OPENAI_API_KEY: "",
+      CLOUDFLARE_ACCOUNT_ID: "acct_test",
+      CLOUDFLARE_API_TOKEN: "cf_token_test",
+      DB: createPromptConfigDb({
+        key: "summary",
+        name: "Summary",
+        provider: "cloudflare",
+        model: "cloudflare-crawl",
+        max_completion_tokens: 500,
+        system_prompt: "Summarize with Cloudflare.",
+        user_prompt_template: "",
+        settings: "{}",
+        active: true
+      })
+    }
+  ));
+
+  assert.equal(response.status, 503);
+  const payload = await response.json();
+  assert.equal(payload.details.code, "ai_provider_unavailable");
+  assert.equal(payload.details.reason, "cloudflare_summary_requires_url_for_crawl");
+  assert.equal(openAICalls, 0);
 });
 
 test("admin test prompt can resolve crawl content without generating an image", async (t) => {

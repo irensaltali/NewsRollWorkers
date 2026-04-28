@@ -74,7 +74,7 @@ export async function processAIRequest(env, revenueCatAppUserId, action, cacheKe
 }
 
 export async function finalizeAIRequestCharge(env, revenueCatAppUserId, action, cacheKey, cost) {
-  const idempotencyKey = `${revenueCatAppUserId}:${action}:${cacheKey}:${crypto.randomUUID()}`;
+  const idempotencyKey = `ai-charge:${revenueCatAppUserId}:${action}:${cacheKey}`;
   const spendResult = await spendCredits(env, revenueCatAppUserId, cost, idempotencyKey);
 
   if (!spendResult.success) {

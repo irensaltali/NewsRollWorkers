@@ -129,7 +129,7 @@ export function promptConfigWithFallback(config, fallbackKey) {
     return clone(fallback);
   }
 
-  return {
+  const merged = {
     ...clone(fallback),
     ...config,
     settings: {
@@ -137,6 +137,13 @@ export function promptConfigWithFallback(config, fallbackKey) {
       ...parsePromptSettings(config.settings ?? config.settingsJson, fallback.settings ?? {})
     }
   };
+
+  const provider = merged.provider ?? fallback.provider;
+  if (!String(merged.userPromptTemplate ?? "").trim()) {
+    merged.userPromptTemplate = getDefaultUserPromptForProvider(fallbackKey, provider);
+  }
+
+  return merged;
 }
 
 export function mediaTemplateWithFallback(template, modality = "image") {
