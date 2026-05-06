@@ -836,7 +836,8 @@ export async function storeCachedAIResult(env, payload) {
 // ── AI request receipts (billing dedup) ──────────────────────────────────────
 
 function isMissingReceiptSubscriberColumn(error) {
-  return error?.code === "42703" && String(error.message ?? "").includes("subscriber_id");
+  const msg = String(error?.message ?? "");
+  return msg.includes("subscriber_id") && (error?.code === "42703" || msg.includes("schema cache"));
 }
 
 async function selectAIRequestReceipt(env, payload, subscriberColumn) {
