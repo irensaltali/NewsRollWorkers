@@ -82,6 +82,18 @@ test("structured logs preserve an explicit message field", () => {
   assert.equal(captured.detail, "ok");
 });
 
+test("worker responses include request id header", async () => {
+  const response = await worker.fetch(
+    new Request("https://example.com/health", {
+      headers: { "cf-ray": "abc123-IST" }
+    }),
+    env
+  );
+
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get("x-request-id"), "abc123");
+});
+
 test("failed request logs include error code and error message", async () => {
   const installId = "log-free-user";
   const token = signTestJWT(installId, TEST_JWT_SECRET);

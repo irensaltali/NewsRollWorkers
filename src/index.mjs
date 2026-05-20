@@ -621,10 +621,46 @@ function aiBillingError(result) {
   if (result?.error === "insufficient_credits") {
     return error("Insufficient credits", 402, { code: "insufficient_credits", balance: result.balance, required: result.required });
   }
+  if (result?.error === "credit_spend_failed") {
+    return error("Credit spend failed", 503, { code: "credit_spend_failed" });
+  }
   if (result?.error) {
     return error(result.error, 500);
   }
   return null;
+}
+
+async function hasAIRequestReceiptSafe(env, receiptKey, action) {
+  try {
+    return { ok: true, alreadyCharged: await hasAIRequestReceipt(env, receiptKey) };
+  } catch (err) {
+    log.warn({
+      event: "ai_receipt_lookup_fail",
+      action,
+      storyId: receiptKey?.storyId,
+      subscriberId: receiptKey?.subscriberId,
+      ...log.fmtError(err)
+    });
+    return { ok: false, response: error("AI receipt lookup unavailable", 503, { code: "ai_receipt_lookup_unavailable" }) };
+  }
+}
+
+async function bestEffort(env, event, operation) {
+  try {
+    await operation();
+  } catch (err) {
+    log.warn({ event, ...log.fmtError(err) });
+  }
+}
+
+function withRequestId(response, requestId) {
+  const headers = new Headers(response.headers);
+  headers.set("x-request-id", requestId);
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers
+  });
 }
 
 const ALLOWED_ORIGINS = [
@@ -801,7 +837,9 @@ async function handleAISummary(request, env) {
 
   // Receipt-based dedup: never charge same user twice for the same story's summary
   const receiptKey = { subscriberId: revenueCatAppUserId, action: "summary", storyId, targetLanguage: null, contentHash: "" };
-  const alreadyCharged = await hasAIRequestReceipt(env, receiptKey);
+  const receiptLookup = await hasAIRequestReceiptSafe(env, receiptKey, "summary");
+  if (!receiptLookup.ok) return receiptLookup.response;
+  const alreadyCharged = receiptLookup.alreadyCharged;
   log.info({ event: "ai_summary_receipt_check", storyId, subscriberId: revenueCatAppUserId, alreadyCharged });
 
   if (!alreadyCharged) {
@@ -818,7 +856,7 @@ async function handleAISummary(request, env) {
     log.info({ event: "ai_summary_db_hit", storyId, source: "story_content.summary" });
     await new Promise((r) => setTimeout(r, 500)); // fake delay for DB hit
     const provider = await resolveAIProvider(env, "summary");
-    await createPromptRunEvent(env, {
+    await bestEffort(env, "ai_summary_prompt_run_event_fail", () => createPromptRunEvent(env, {
       source: "app_api",
       promptKind: "ai",
       promptKey: "summary",
@@ -831,7 +869,7 @@ async function handleAISummary(request, env) {
       requestExcerpt: JSON.stringify({ storyId }).slice(0, 500),
       responseExcerpt: String(stored.summary).slice(0, 500),
       storyId
-    });
+    }));
     if (alreadyCharged) {
       return json({ result: stored.summary, creditsUsed: 0, balanceAfter: null, cached: true, charged: false });
     }
@@ -888,7 +926,7 @@ async function handleAISummary(request, env) {
   }
 
   if (!result) {
-    await createPromptRunEvent(env, {
+    await bestEffort(env, "ai_summary_prompt_run_event_fail", () => createPromptRunEvent(env, {
       source: "app_api",
       promptKind: "ai",
       promptKey: "summary",
@@ -899,13 +937,13 @@ async function handleAISummary(request, env) {
       requestExcerpt: JSON.stringify({ storyId, title: summaryTitle }).slice(0, 500),
       errorText: "AI generation failed",
       storyId
-    });
+    }));
     return error("AI generation failed", 502);
   }
 
   // Persist to story_content.summary for future DB-first hits
-  await storeStorySummary(env, { storyId, sourceUrl: body.url ?? null, summary: result, updatedAt: now() });
-  await createPromptRunEvent(env, {
+  await bestEffort(env, "ai_summary_store_fail", () => storeStorySummary(env, { storyId, sourceUrl: body.url ?? null, summary: result, updatedAt: now() }));
+  await bestEffort(env, "ai_summary_prompt_run_event_fail", () => createPromptRunEvent(env, {
     source: "app_api",
     promptKind: "ai",
     promptKey: "summary",
@@ -916,7 +954,7 @@ async function handleAISummary(request, env) {
     requestExcerpt: JSON.stringify({ storyId, title: summaryTitle }).slice(0, 500),
     responseExcerpt: String(result).slice(0, 500),
     storyId
-  });
+  }));
 
   if (alreadyCharged) {
     return json({ result, creditsUsed: 0, balanceAfter: null, cached: false, charged: false });
@@ -2606,7 +2644,7 @@ export default {
         durationMs,
         ...(await responseLogFields(response))
       });
-      return withCors(response, request);
+      return withRequestId(withCors(response, request), rid);
     } catch (thrown) {
       const durationMs = Date.now() - start;
       if (thrown instanceof Response) {
@@ -2619,7 +2657,7 @@ export default {
           durationMs,
           ...(await responseLogFields(thrown))
         });
-        return withCors(thrown, request);
+        return withRequestId(withCors(thrown, request), rid);
       }
       log.error({
         event: "request_error",
@@ -2628,7 +2666,7 @@ export default {
         durationMs,
         ...log.fmtError(thrown),
       });
-      return withCors(error(thrown instanceof Error ? thrown.message : "Unexpected error", 500), request);
+      return withRequestId(withCors(error(thrown instanceof Error ? thrown.message : "Unexpected error", 500), request), rid);
     }
   }
 };

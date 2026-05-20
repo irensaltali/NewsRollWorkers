@@ -701,6 +701,87 @@ test("AI failure returns 502 without spending credits", async () => {
   });
 });
 
+test("AI summary receipt lookup failure returns structured 503", async () => {
+  const installId = "install-receipt-fail";
+  const token = makeToken(installId);
+  const testEnv = {
+    ...env,
+    SUPABASE_URL: "https://example.supabase.co",
+    SUPABASE_SECRET_KEY: "service-role-test"
+  };
+
+  await withMockedFetch([
+    {
+      matchEnd: `customers/${installId}`,
+      body: { object: "customer", id: installId, active_entitlements: { object: "list", items: [{ object: "customer.active_entitlement", entitlement_id: "pro", expires_at: null }] } }
+    },
+    {
+      match: "/rest/v1/ai_request_receipts",
+      status: 500,
+      body: { code: "PGRST500", message: "db unavailable" }
+    }
+  ], async () => {
+    const response = await worker.fetch(
+      new Request("https://example.com/v1/ai/summary", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          authorization: `Bearer ${token}`
+        },
+        body: JSON.stringify({ storyId: 88888, title: "Test", text: "Test content" })
+      }),
+      testEnv
+    );
+
+    assert.equal(response.status, 503);
+    const payload = await response.json();
+    assert.equal(payload.error, "AI receipt lookup unavailable");
+    assert.equal(payload.details.code, "ai_receipt_lookup_unavailable");
+  });
+});
+
+test("AI summary credit spend failure returns structured 503", async () => {
+  const installId = "install-spend-fail";
+  const token = makeToken(installId);
+
+  await withMockedFetch([
+    {
+      match: `customers/${installId}/virtual_currencies/transactions`,
+      status: 500,
+      body: { error: "RevenueCat unavailable" }
+    },
+    {
+      matchEnd: `customers/${installId}/virtual_currencies`,
+      body: { object: "list", items: [{ object: "virtual_currency_balance", currency_code: "credit", balance: 750 }] }
+    },
+    {
+      matchEnd: `customers/${installId}`,
+      body: { object: "customer", id: installId, active_entitlements: { object: "list", items: [{ object: "customer.active_entitlement", entitlement_id: "pro", expires_at: null }] } }
+    },
+    {
+      match: "api.openai.com",
+      body: { choices: [{ message: { content: JSON.stringify({ bullets: ["AI generated summary"] }) } }] }
+    }
+  ], async () => {
+    const response = await worker.fetch(
+      new Request("https://example.com/v1/ai/summary", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          authorization: `Bearer ${token}`
+        },
+        body: JSON.stringify({ storyId: 88999, title: "Test", text: "Test content" })
+      }),
+      { ...env }
+    );
+
+    assert.equal(response.status, 503);
+    const payload = await response.json();
+    assert.equal(payload.error, "Credit spend failed");
+    assert.equal(payload.details.code, "credit_spend_failed");
+  });
+});
+
 test("AI summary logs validation failures and does not spend credits on empty bullets", async () => {
   const installId = "install-ai-empty-summary";
   const token = makeToken(installId);
