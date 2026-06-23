@@ -87,48 +87,111 @@ function fixturePublishedFeed(cursor = null, limit = 20) {
     .slice(0, limit);
 }
 
-async function listStorySourceUrls(env, storyIds) {
+async function getStoriesWithCache(env, storyIds) {
+  const cacheResults = new Map();
   if (!hasDB(env) || !Array.isArray(storyIds) || storyIds.length === 0) {
-    return new Map();
+    return cacheResults;
   }
 
-  const uniqueStoryIds = [...new Set(storyIds.filter((storyId) => Number.isFinite(Number(storyId))))];
-  if (uniqueStoryIds.length === 0) {
-    return new Map();
+  const uniqueIds = [...new Set(storyIds.map(Number).filter(Number.isFinite))];
+  if (uniqueIds.length === 0) return cacheResults;
+
+  const missingIds = [];
+
+  // 1. Try to read from KV cache first
+  if (env?.VISUAL_FEED_CACHE?.get) {
+    const cachePromises = uniqueIds.map(async (id) => {
+      try {
+        const cached = await env.VISUAL_FEED_CACHE.get(`story:v1:${id}`);
+        if (cached) {
+          const parsed = JSON.parse(cached);
+          if (parsed && parsed.storyId) {
+            cacheResults.set(id, parsed);
+            return;
+          }
+        }
+      } catch (err) {
+        log.warn({ event: "story_cache_read_fail", storyId: id, ...log.fmtError(err) });
+      }
+      missingIds.push(id);
+    });
+    await Promise.all(cachePromises);
+  } else {
+    missingIds.push(...uniqueIds);
   }
 
-  const { data } = await getDB(env)
-    .from("story_content")
-    .select("story_id, source_url")
-    .in("story_id", uniqueStoryIds);
+  // 2. Query Supabase for any missing story IDs
+  if (missingIds.length > 0) {
+    const [feedResult, contentResult, mediaResult] = await Promise.all([
+      getDB(env)
+        .from("published_feed_entries")
+        .select("story_id, publish_sequence, source_endpoint, published_at, media_url, media_status, headline, media_type")
+        .in("story_id", missingIds),
+      getDB(env)
+        .from("story_content")
+        .select("story_id, source_url, summary, topics")
+        .in("story_id", missingIds),
+      getDB(env)
+        .from("story_media")
+        .select("story_id, media_url, media_type")
+        .in("story_id", missingIds)
+    ]);
 
-  return new Map(
-    (data ?? [])
-      .filter((entry) => entry?.source_url)
-      .map((entry) => [Number(entry.story_id), entry.source_url])
-  );
-}
+    const feedRows = feedResult.data ?? [];
+    const contentRows = contentResult.data ?? [];
+    const mediaRows = mediaResult.data ?? [];
 
-async function listStoryMediaUrls(env, storyIds) {
-  if (!hasDB(env) || !Array.isArray(storyIds) || storyIds.length === 0) {
-    return new Map();
+    const feedByStoryId = new Map(feedRows.map((r) => [Number(r.story_id), r]));
+    const contentByStoryId = new Map(contentRows.map((r) => [Number(r.story_id), r]));
+    const mediaByStoryId = new Map(mediaRows.map((r) => [Number(r.story_id), r]));
+
+    const allFoundIds = new Set([
+      ...feedByStoryId.keys(),
+      ...contentByStoryId.keys(),
+      ...mediaByStoryId.keys()
+    ]);
+
+    const writePromises = [];
+
+    for (const storyId of allFoundIds) {
+      const feed = feedByStoryId.get(storyId);
+      const content = contentByStoryId.get(storyId);
+      const media = mediaByStoryId.get(storyId);
+
+      const storyObj = {
+        storyId,
+        publishSequence: feed?.publish_sequence ?? null,
+        sourceEndpoint: feed?.source_endpoint ?? null,
+        publishedAt: feed?.published_at ?? null,
+        mediaUrl: media?.media_url ?? feed?.media_url ?? null,
+        sourceUrl: content?.source_url ?? null,
+        mediaStatus: feed?.media_status ?? null,
+        headline: feed?.headline ?? null,
+        summary: feed?.summary ?? content?.summary ?? null,
+        mediaType: feed?.media_type ?? media?.media_type ?? null,
+        topics: Array.isArray(content?.topics) && content.topics.length > 0 ? content.topics : null
+      };
+
+      cacheResults.set(storyId, storyObj);
+
+      if (env?.VISUAL_FEED_CACHE?.put) {
+        const isReady = feed?.media_status === "ready" || feed?.media_status === "failed";
+        const ttl = isReady ? 3600 * 24 * 14 : 60; // 14 days or 60s
+        writePromises.push(
+          env.VISUAL_FEED_CACHE.put(`story:v1:${storyId}`, JSON.stringify(storyObj), { expirationTtl: ttl })
+            .catch((err) => {
+              log.warn({ event: "story_cache_write_fail", storyId, ...log.fmtError(err) });
+            })
+        );
+      }
+    }
+
+    if (writePromises.length > 0) {
+      await Promise.all(writePromises);
+    }
   }
 
-  const uniqueStoryIds = [...new Set(storyIds.filter((storyId) => Number.isFinite(Number(storyId))))];
-  if (uniqueStoryIds.length === 0) {
-    return new Map();
-  }
-
-  const { data } = await getDB(env)
-    .from("story_media")
-    .select("story_id, media_url")
-    .in("story_id", uniqueStoryIds);
-
-  return new Map(
-    (data ?? [])
-      .filter((entry) => entry?.media_url)
-      .map((entry) => [Number(entry.story_id), entry.media_url])
-  );
+  return cacheResults;
 }
 
 // ── Visual feed ──────────────────────────────────────────────────────────────
@@ -156,25 +219,27 @@ export async function listPublishedVisualFeed(env, { cursor = null, limit = 20 }
     data = rows ?? [];
   }
 
-  const sourceUrlsByStoryId = await listStorySourceUrls(
-    env,
-    (data ?? []).map((entry) => Number(entry.story_id))
-  );
-  const mediaUrlsByStoryId = await listStoryMediaUrls(
-    env,
-    (data ?? []).map((entry) => Number(entry.story_id))
-  );
+  if (!data || data.length === 0) {
+    return [];
+  }
 
-  return (data ?? []).map((r) => ({
-    storyId: r.story_id,
-    publishSequence: r.publish_sequence,
-    sourceEndpoint: r.source_endpoint,
-    publishedAt: r.published_at,
-    mediaUrl: mediaUrlsByStoryId.get(Number(r.story_id)) ?? r.media_url ?? null,
-    sourceUrl: sourceUrlsByStoryId.get(Number(r.story_id)) ?? null,
-    mediaStatus: r.media_status,
-    headline: r.headline
-  }));
+  const storyIds = data.map((entry) => Number(entry.story_id));
+  const cacheResults = await getStoriesWithCache(env, storyIds);
+
+  return data.map((r) => {
+    const cached = cacheResults.get(Number(r.story_id));
+    return {
+      storyId: r.story_id,
+      publishSequence: r.publish_sequence,
+      sourceEndpoint: r.source_endpoint,
+      publishedAt: r.published_at,
+      mediaUrl: cached?.mediaUrl ?? r.media_url ?? null,
+      sourceUrl: cached?.sourceUrl ?? null,
+      mediaStatus: r.media_status,
+      headline: r.headline,
+      summary: cached?.summary ?? null
+    };
+  });
 }
 
 export async function getPublishedFeedEntriesByStoryIds(env, storyIds) {
@@ -182,32 +247,10 @@ export async function getPublishedFeedEntriesByStoryIds(env, storyIds) {
     return [];
   }
 
-  const uniqueIds = [...new Set(storyIds.map(Number).filter(Number.isFinite))];
-  if (uniqueIds.length === 0) return [];
-
-  const { data } = await getDB(env)
-    .from("published_feed_entries")
-    .select("story_id, publish_sequence, source_endpoint, published_at, media_url, media_status, headline")
-    .in("story_id", uniqueIds);
-
-  const sourceUrlsByStoryId = await listStorySourceUrls(env, uniqueIds);
-  const mediaUrlsByStoryId = await listStoryMediaUrls(env, uniqueIds);
-
-  const rowsByStoryId = new Map(
-    (data ?? []).map((r) => [Number(r.story_id), {
-      storyId: Number(r.story_id),
-      publishSequence: r.publish_sequence,
-      sourceEndpoint: r.source_endpoint,
-      publishedAt: r.published_at,
-      mediaUrl: mediaUrlsByStoryId.get(Number(r.story_id)) ?? r.media_url ?? null,
-      sourceUrl: sourceUrlsByStoryId.get(Number(r.story_id)) ?? null,
-      mediaStatus: r.media_status,
-      headline: r.headline
-    }])
-  );
+  const cacheResults = await getStoriesWithCache(env, storyIds);
 
   // Preserve the original storyIds order (Shaped ranking order)
-  return storyIds.map((id) => rowsByStoryId.get(Number(id))).filter(Boolean);
+  return storyIds.map((id) => cacheResults.get(Number(id))).filter(Boolean);
 }
 
 export async function updatePublishedFeedEntry(env, storyId, fields) {
@@ -228,6 +271,10 @@ export async function updatePublishedFeedEntry(env, storyId, fields) {
     .from("published_feed_entries")
     .update(updates)
     .eq("story_id", storyId);
+
+  if (!error && env?.VISUAL_FEED_CACHE?.delete) {
+    await env.VISUAL_FEED_CACHE.delete(`story:v1:${storyId}`).catch(() => {});
+  }
 
   return !error;
 }
@@ -352,6 +399,10 @@ async function upsertStoryContent(env, payload) {
   await getDB(env)
     .from("story_content")
     .upsert(row);
+
+  if (env?.VISUAL_FEED_CACHE?.delete) {
+    await env.VISUAL_FEED_CACHE.delete(`story:v1:${payload.storyId}`).catch(() => {});
+  }
 }
 
 export async function storeReadableContent(env, payload) {
@@ -381,6 +432,10 @@ export async function replaceStoryContent(env, payload) {
       topics: payload.topics ?? null,
       updated_at: payload.updatedAt
     });
+
+  if (env?.VISUAL_FEED_CACHE?.delete) {
+    await env.VISUAL_FEED_CACHE.delete(`story:v1:${payload.storyId}`).catch(() => {});
+  }
 }
 
 export async function getReadableContent(env, storyId) {
@@ -587,6 +642,10 @@ export async function upsertMedia(env, payload) {
       model: payload.model ?? null,
       generation_latency_ms: payload.generationLatencyMs ?? null
     });
+
+  if (env?.VISUAL_FEED_CACHE?.delete) {
+    await env.VISUAL_FEED_CACHE.delete(`story:v1:${payload.storyId}`).catch(() => {});
+  }
 }
 
 export async function reserveMediaQueueSlot(env, payload) {
@@ -774,25 +833,15 @@ export async function attachStoryContextToEvents(env, events) {
     return events;
   }
 
-  const [{ data: feedData }, { data: contentData }, { data: mediaData }] = await Promise.all([
-    getDB(env).from("published_feed_entries").select("story_id, source_endpoint, media_type").in("story_id", storyIds),
-    getDB(env).from("story_content").select("story_id, topics").in("story_id", storyIds),
-    getDB(env).from("story_media").select("story_id, media_type").in("story_id", storyIds)
-  ]);
-
-  const byStoryId = new Map((feedData ?? []).map((row) => [row.story_id, row]));
-  const contentByStoryId = new Map((contentData ?? []).map((row) => [row.story_id, row]));
-  const mediaByStoryId = new Map((mediaData ?? []).map((row) => [row.story_id, row]));
+  const cacheResults = await getStoriesWithCache(env, storyIds);
 
   return events.map((event) => {
-    const story = byStoryId.get(event.storyId);
-    const content = contentByStoryId.get(event.storyId);
-    const media = mediaByStoryId.get(event.storyId);
+    const story = cacheResults.get(Number(event.storyId));
     return {
       ...event,
-      sourceEndpoint: event.sourceEndpoint ?? story?.source_endpoint ?? null,
-      mediaType: event.mediaType ?? story?.media_type ?? media?.media_type ?? null,
-      topics: Array.isArray(content?.topics) && content.topics.length > 0 ? content.topics : null
+      sourceEndpoint: event.sourceEndpoint ?? story?.sourceEndpoint ?? null,
+      mediaType: event.mediaType ?? story?.mediaType ?? null,
+      topics: Array.isArray(story?.topics) && story.topics.length > 0 ? story.topics : null
     };
   });
 }
@@ -1250,6 +1299,10 @@ export async function updatePublishedFeedEntryMediaProjection(env, storyId, fiel
       generation_cost_usd: fields.generationCostUsd ?? null
     })
     .eq("story_id", storyId);
+
+  if (env?.VISUAL_FEED_CACHE?.delete) {
+    await env.VISUAL_FEED_CACHE.delete(`story:v1:${storyId}`).catch(() => {});
+  }
 }
 
 // ── RSS sources ───────────────────────────────────────────────────────────────

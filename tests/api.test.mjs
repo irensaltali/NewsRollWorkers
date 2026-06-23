@@ -1320,6 +1320,7 @@ test("visual feed returns global fixture data without D1", async () => {
   assert.equal(payload.items[0].mediaStatus, "ready");
   assert.equal(payload.items[0].sourceUrl, "https://example.com/articles/43987539");
   assert.equal(payload.items[0].readableUrl, "https://newsroll.invalid/v1/stories/43987539/article");
+  assert.equal(payload.items[0].summary, "Teams are rethinking how native news clients should present AI-generated context without crowding the reading experience.");
 });
 
 test("visual feed cursor paginates the global fixture feed", async () => {
@@ -1363,7 +1364,8 @@ test("visual feed uses cached snapshot for the first page when available", async
             sourceUrl: "https://example.com/articles/50000001",
             readableUrl: "https://newsroll.invalid/v1/stories/50000001/article",
             mediaStatus: "ready",
-            headline: "Cached snapshot headline"
+            headline: "Cached snapshot headline",
+            summary: "Cached snapshot summary"
           }
         ]
       }))
@@ -1375,9 +1377,10 @@ test("visual feed uses cached snapshot for the first page when available", async
   assert.equal(payload.items[0].storyId, 50000001);
   assert.equal(payload.items[0].sourceEndpoint, "show");
   assert.equal(payload.items[0].headline, "Cached snapshot headline");
+  assert.equal(payload.items[0].summary, "Cached snapshot summary");
 });
 
-test("visual feed ignores stale cached snapshot rows that predate headline support", async () => {
+test("visual feed ignores stale cached snapshot rows that predate headline or summary support", async () => {
   const response = await worker.fetch(
     new Request("https://example.com/v1/visual-feed?limit=1"),
     {
@@ -1401,7 +1404,7 @@ test("visual feed ignores stale cached snapshot rows that predate headline suppo
 
   assert.equal(response.status, 200);
   const payload = await response.json();
-  // Stale cache (no headline) is ignored; falls back to fixture feed
+  // Stale cache (no headline/summary) is ignored; falls back to fixture feed
   assert.equal(payload.items[0].storyId, 43987539);
 });
 

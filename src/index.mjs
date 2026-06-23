@@ -273,7 +273,8 @@ async function refreshPublishedFeedSnapshot(env, publishedEntry) {
     publishedAt: publishedEntry.publishedAt,
     mediaUrl: publishedEntry.mediaUrl,
     mediaStatus: publishedEntry.mediaStatus,
-    headline: publishedEntry.headline
+    headline: publishedEntry.headline,
+    summary: publishedEntry.summary
   });
 
   await writeVisualFeedSnapshot(env, mergeVisualFeedSnapshot(currentSnapshot ?? [], nextRow));

@@ -39,7 +39,8 @@ export function makePublishedVisualFeedRow(env, payload) {
     sourceUrl: payload.sourceUrl ?? null,
     mediaStatus: payload.mediaStatus ?? "ready",
     readableUrl: payload.readableUrl ?? readableUrlFor(env, payload.storyId),
-    headline: payload.headline ?? null
+    headline: payload.headline ?? null,
+    summary: payload.summary ?? null
   };
 }
 
@@ -55,6 +56,7 @@ export function toVisualFeedItem(env, row) {
     readableUrl: row.readableUrl ?? readableUrlFor(env, row.storyId),
     mediaStatus: row.mediaStatus ?? "ready",
     headline: row.headline ?? null,
+    summary: row.summary ?? null,
     isLocked: row.isLocked ?? null
   };
 }
@@ -82,7 +84,8 @@ function normalizeSnapshot(raw) {
   const hasCompatibleShape = items.every((item) =>
     item &&
     typeof item === "object" &&
-    Object.prototype.hasOwnProperty.call(item, "headline")
+    Object.prototype.hasOwnProperty.call(item, "headline") &&
+    Object.prototype.hasOwnProperty.call(item, "summary")
   );
 
   return hasCompatibleShape ? items : null;

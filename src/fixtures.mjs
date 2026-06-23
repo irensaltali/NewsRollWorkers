@@ -8,7 +8,8 @@ export const fixtureFeed = [
     sourceUrl: "https://example.com/articles/43987539",
     readableUrl: "https://newsroll.invalid/v1/stories/43987539/article",
     mediaStatus: "ready",
-    headline: "Building native clients without AI text clutter"
+    headline: "Building native clients without AI text clutter",
+    summary: "Teams are rethinking how native news clients should present AI-generated context without crowding the reading experience."
   },
   {
     storyId: 43987540,
@@ -19,6 +20,7 @@ export const fixtureFeed = [
     sourceUrl: "https://example.com/articles/43987540",
     readableUrl: "https://newsroll.invalid/v1/stories/43987540/article",
     mediaStatus: "ready",
-    headline: "What reliable iPad layouts still feel native"
+    headline: "What reliable iPad layouts still feel native",
+    summary: "Designers are refining iPad layouts around predictable navigation, useful density, and platform-native controls."
   }
 ];

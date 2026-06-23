@@ -14,7 +14,8 @@ function readyRow(storyId = 99999999) {
     mediaUrl: "https://cdn.example.com/story.jpg",
     sourceUrl: `https://example.com/articles/${storyId}`,
     readableUrl: `https://newsroll.invalid/v1/stories/${storyId}/article`,
-    mediaStatus: "ready"
+    mediaStatus: "ready",
+    summary: "A short summary explains what changed and why it matters."
   };
 }
 
@@ -85,4 +86,5 @@ test("buildVisualFeedResponse preserves locked manifest flags", () => {
 
   assert.equal(response.items[0].isLocked, false);
   assert.equal(response.items[1].isLocked, true);
+  assert.equal(response.items[0].summary, "A short summary explains what changed and why it matters.");
 });
